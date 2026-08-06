@@ -38,13 +38,13 @@ RUN sdkmanager \
 
 # llama.cpp sources, pinned. Qwen3-TTS support landed 2026-08-04 (PR #26254);
 # this pin is the same commit validated against the desktop CUDA build on
-# brainiac. Bump LLAMA_CPP_COMMIT to pick up upstream Vulkan/CPU fixes.
+# Bump LLAMA_CPP_COMMIT to pick up upstream Vulkan/CPU fixes.
 ARG LLAMA_CPP_COMMIT="f9e832c10e9444cb168ddcb579cc62c154f3068b"
 RUN wget -q "https://github.com/ggml-org/llama.cpp/archive/${LLAMA_CPP_COMMIT}.tar.gz" -O /tmp/llama.tar.gz && \
     mkdir -p /opt/llama_cpp && \
     tar xzf /tmp/llama.tar.gz -C /opt/llama_cpp --strip-components=1 && \
     rm /tmp/llama.tar.gz
-# Qwen3-TTS fixes not yet upstream (validated on brainiac 2026-08-05):
+# Qwen3-TTS fixes not yet upstream (validated on desktop CPU/Vulkan):
 #  - clip.cpp: zero-fill graph inputs between generator stages; stale
 #    allocator memory in unused stage inputs trips CPU get_rows bounds
 #    asserts (upstream issue #26632)

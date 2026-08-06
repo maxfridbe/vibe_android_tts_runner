@@ -64,7 +64,8 @@ object ModelManager {
         CatalogModel(
             id = "1.7b-vd",
             label = "Qwen3-TTS 1.7B VoiceDesign (voice designer only — not hosted, push manually)",
-            talkerUrl = "",   // nobody hosts these GGUFs; converted on brainiac, pushed via adb
+            talkerUrl = "",   // no public GGUF of this variant yet: convert it
+            // yourself (see README) and push the files into the models dir
             talkerFile = "Qwen3-TTS-VD-Q4_K_M.gguf",
             mmprojUrl = "",
             mmprojFile = "mmproj-Qwen3-TTS-VD-Q8_0.gguf",

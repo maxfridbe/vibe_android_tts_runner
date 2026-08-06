@@ -1,6 +1,8 @@
 import re, sys
 
-src = open('/var/home/maxfridbe/Dev/vibecoding/android_builder/diffusion/src/main/cpp/opencl-headers/CL/cl_function_types.h').read()
+import sys
+# usage: gen_shim.py [path/to/CL/cl_function_types.h]
+src = open(sys.argv[1] if len(sys.argv) > 1 else '../opencl-headers/CL/cl_function_types.h').read()
 
 # Match: typedef RETTYPE CL_API_CALL NAME_t( PARAMS );
 pat = re.compile(r'typedef\s+([\w \*]+?)\s+CL_API_CALL\s+(\w+)_t\(\s*(.*?)\s*\)\s*;', re.S)

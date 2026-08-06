@@ -42,10 +42,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Signing uses the committed keystore/ by default. To use a private
-      # key instead, set the ANDROID_KEYSTORE_B64 and
-      # ANDROID_KEYSTORE_PROPERTIES repo secrets — they override it here.
-      - name: Override keystore from secrets (if configured)
+      # No key is committed: build.sh generates a throwaway self-signed one
+      # unless these secrets provide a real key.
+      - name: Keystore from secrets (optional)
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           KEYSTORE_PROPERTIES: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}

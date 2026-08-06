@@ -4,6 +4,10 @@
 output/
 local.properties
 
+# Signing key: generated per-clone by build.sh (never committed — a shared
+# private key in a public repo is worthless anyway)
+keystore/
+
 # IDE
 .idea/
 *.iml

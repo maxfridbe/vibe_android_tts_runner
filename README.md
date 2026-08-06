@@ -1,109 +1,167 @@
 # TTS Runner — on-device Qwen3-TTS for Android
 
-Share any text or article link to **TTS Runner** from any app and it reads it
-aloud in a cloned voice, fully on-device: no server, no account, no audio
-leaving the phone. Built on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
-Qwen3-TTS support (12 Hz codec, 24 kHz audio) with speaker-embedding voice
-cloning from a 10–20 s reference clip.
+Share any text or article link to **TTS Runner** and it reads it aloud in a
+cloned voice, entirely on-device: no server, no account, no audio leaving the
+phone. Built on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s Qwen3-TTS
+support (12 Hz codec, 24 kHz audio), with speaker-embedding voice cloning from
+a 10–20 s reference clip.
 
-Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase) — the
-containerized build system is unchanged: the host needs only podman/docker.
+- **Listen or save** — stream playback, or render to `Music/TTS Runner/*.m4a`
+  in the background with the screen off.
+- **Voices** — clone from any recording, or *design* one (describe it, or roll
+  random voices until you like one). Previews are generated once per model and
+  cached.
+- **Jobs** — history with per-job stats (audio length, generation time, RTF),
+  re-run with a different voice, play or share the result.
+- **Backends** — CPU everywhere; OpenCL on Adreno; Vulkan on everything else.
+  The app detects the GPU and marks the recommended one.
 
-## Building
+Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase): the build
+is fully containerized, so the host needs only podman or docker — no Android
+SDK, NDK, JDK, or Gradle install.
+
+## Build it
 
 ```sh
-./build.sh tts-runner
+git clone https://github.com/maxfridbe/vibe_android_tts_runner.git
+cd vibe_android_tts_runner
+./build.sh tts-runner                       # first run also builds the image
 adb install -r output/tts-runner/tts-runner-*-debug.apk
 ```
 
-First build is slow: the builder image fetches the Android SDK/NDK and a
-pinned llama.cpp, then compiles llama.cpp (CPU + OpenCL backends) for arm64.
+The first build takes a while: the builder image fetches the Android SDK/NDK,
+Vulkan headers and a current `glslc`, plus a pinned llama.cpp, then compiles
+llama.cpp (CPU + Vulkan + OpenCL) for arm64. Later builds reuse the image —
+pass `SKIP_IMAGE_BUILD=1` to skip the check.
 
-## Using it
+Signing: `build.sh` generates `keystore/` on first run (self-signed, gitignored)
+and reuses it, so reinstalls always match. CI does the same; to sign with your
+own key set the `ANDROID_KEYSTORE_B64` and `ANDROID_KEYSTORE_PROPERTIES` repo
+secrets.
 
-1. Open TTS Runner once: download a model (1.7B Q4_K_M, ~1.5 GB) and import a
-   voice (any wav/mp3/flac with 10–20 s of clean speech from one speaker).
-2. From any app, share text or an article URL → "Read aloud (TTS Runner)".
-   Selected text also works via the text-selection menu.
-3. Pick a voice in the popup, then **Speak** (streamed playback: audio starts
-   after the first chunk, ~25 s) or **Save** (renders the whole text in the
-   background to `Music/TTS Runner/<title>.m4a` — AAC, since Android has no
-   MP3 encoder). A notification shows a real progress bar and a Stop button;
-   generation keeps running with the screen off.
+Versioning is derived from git: `versionCode` = commit count, `versionName` =
+`git describe --tags --match 'v*'`, so tag `v1.2.0` builds as `1.2.0` and later
+commits as `1.2.0-3-gabc1234`. Override with `VERSION_NAME` / `VERSION_CODE`.
 
-Shared URLs are fetched and run through a small readability pass (densest
-`<article>`/`<p>` container); markdown noise, inline URLs, and `[17]`-style
+GitHub Actions builds debug + release APKs on every push and attaches them as
+artifacts; pushing a `v*` tag also publishes them to a Release.
+
+## Use it
+
+1. Open the app once: **Settings** → download a model (1.7B Q4_K_M, ~1.5 GB),
+   **Voices** → import a recording (10–20 s of clean speech, one speaker) or
+   design a voice.
+2. From any app, share text or an article URL → *Read aloud (TTS Runner)*.
+   Selected text works too, via the text-selection menu.
+3. Or use the **New job** tab directly: paste text, pick a voice, Listen or
+   Save.
+
+Shared URLs are fetched and run through a readability pass (densest
+`<article>`/`<p>` container); markdown noise, inline URLs and `[17]`-style
 citations are stripped before speaking.
+
+## Models
+
+| Model | Source |
+|---|---|
+| 1.7B Q4_K_M (recommended), Q8_0 | downloaded in-app from [ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
+| 1.7B Q4_0 (needed for the Adreno OpenCL kernels) | requantized on-device from the Q8 download — nobody hosts this quant |
+| 1.7B VoiceDesign (description-based voice design) | no public GGUF; convert it yourself, see below |
+
+VoiceDesign is optional — without it the designer still rolls random voices.
+To build it, run llama.cpp's converter (this repo's patch is required, it
+teaches the converter and mtmd about a codec-only mmproj) against the
+[Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign)
+checkpoint:
+
+```sh
+python convert_hf_to_gguf.py <checkpoint> --outfile Qwen3-TTS-VD-f16.gguf --outtype f16
+python convert_hf_to_gguf.py <checkpoint> --mmproj --outfile mmproj-Qwen3-TTS-VD-Q8_0.gguf --outtype q8_0
+llama-quantize Qwen3-TTS-VD-f16.gguf Qwen3-TTS-VD-Q4_K_M.gguf Q4_K_M
+adb push Qwen3-TTS-VD-Q4_K_M.gguf mmproj-Qwen3-TTS-VD-Q8_0.gguf \
+    /sdcard/Android/data/com.maxfridbe.ttsrunner/files/models/
+```
 
 ## Architecture
 
 ```
-apps/tts-runner/
-├── app/src/main/cpp/
-│   ├── CMakeLists.txt      # llama.cpp (CPU + OpenCL w/ Adreno kernels)
-│   ├── tts_jni.cpp         # persistent engine: load once, WAV per utterance
-│   ├── android_posix_shim.h, opencl-headers/, opencl-stub/
-│   │                       # from android_builder/diffusion: posix_madvise
-│   │                       # stub + Qualcomm CL headers + dlopen loader shim
-└── app/src/main/kotlin/com/maxfridbe/ttsrunner/
-    ├── TtsService.kt       # foreground service in the separate :engine
-    │                       # process (native crash can't kill the UI);
-    │                       # chunk → generate → AudioTrack pipeline;
-    │                       # model unloaded after 5 min idle
-    ├── ShareActivity.kt    # share target: clean text → voice popup → speak
-    ├── MainActivity.kt     # model download, backend choice, voice library
+apps/tts-runner/app/src/main/
+├── cpp/
+│   ├── CMakeLists.txt      # llama.cpp: CPU + Vulkan + OpenCL (Adreno kernels)
+│   ├── tts_jni.cpp         # persistent engine: load once, WAV per utterance,
+│   │                       # device pinning, on-device requantization
+│   └── android_posix_shim.h, opencl-headers/, opencl-stub/
+└── kotlin/com/maxfridbe/ttsrunner/
+    ├── TtsService.kt       # foreground service in a separate ":engine"
+    │                       # process (a native crash can't kill the UI);
+    │                       # chunk → generate → AudioTrack/AAC pipeline
+    ├── MainActivity.kt     # tabs: New job / Voices / Jobs / Settings
+    ├── ShareActivity.kt    # share target: clean text → voice → job
     ├── TextCleaner.kt      # jsoup readability + plain-text cleanup
-    ├── Chunker.kt          # natural-break splitting (~400 chars ≈ 25 s)
-    ├── ModelManager.kt     # resumable 2-file (talker + mmproj) downloads
-    └── VoiceStore.kt / TtsEngine.kt
+    ├── Chunker.kt          # natural-break splitting (~200 chars ≈ 15 s)
+    ├── ModelManager.kt     # catalog, resumable downloads, requantize
+    ├── JobStore.kt / VoiceStore.kt / AudioSaver.kt / AudioShare.kt
+    └── TtsEngine.kt        # JNI facade
 ```
 
-Generation quality guard (ported from vibe_audiobook_maker): a chunk whose
-audio is implausibly short (instant EOS) or pegged at the token cap (runaway)
-is re-rolled with a fresh seed, up to twice.
+`tooling/adb_test.sh` drives a generation over adb with no screen taps.
 
-## Backends and the llama.cpp patch
+## llama.cpp patches
 
-`docker/patches/qwen3tts-fixes.patch` carries three fixes (validated on a
-desktop RTX 5070, 2026-08-05/06) that upstream does not have yet:
+`docker/patches/qwen3tts-fixes.patch` carries four fixes upstream does not
+have yet (all validated on desktop CPU/Vulkan and on-device):
 
-- **Double-read** (`tools/mtmd/mtmd-helper-gen.cpp`): the generation loop
-  overlaid the text embeddings onto every generated frame (a streaming-mode
-  leftover), feeding the utterance to the model a second time — it then read
-  the text twice (~2.3x duration, whisper-confirmed, most seeds). The
-  official non-streaming pipeline adds only `tts_pad`; fixed to match, and
-  the talker sampling now mirrors the official generation config (top_k 50,
-  top_p 1.0, temp 0.9, repetition_penalty 1.05, control tokens suppressed).
+- **Double-read** (`mtmd-helper-gen.cpp`): the generation loop overlaid the
+  text embeddings onto every generated frame — a streaming-mode leftover that
+  fed the utterance to the model a second time, so it read the text twice
+  (~2.3× duration, whisper-confirmed, most seeds). The official non-streaming
+  pipeline adds only `tts_pad`; fixed to match. Sampling also now mirrors the
+  official generation config (top_k 50, top_p 1.0, temp 0.9, repetition
+  penalty 1.05, control tokens suppressed).
+- **CPU crash** (`clip.cpp`, upstream issue #26632): the multi-stage generator
+  leaves stage-unused graph inputs uninitialized; stale allocator memory then
+  trips `GGML_ASSERT(i01 >= 0 && i01 < ne01)` in `get_rows`. Fixed by
+  zero-filling graph inputs per eval.
+- **Vulkan assert** (`qwen3tts-gen.cpp`): code-index views into the acoustic
+  cache are 4-byte offset and the Vulkan `get_rows` kernels reject misaligned
+  buffer offsets. Fixed with `ggml_cont` on those views.
+- **VoiceDesign** (`mtmd.cpp`, `mtmd-helper*`, `conversion/qwen3tts.py`):
+  accept a codec-only mmproj (VoiceDesign has no speaker encoder) and add
+  `inp->instruct`, which tokenizes a voice description as a user turn and
+  prepends it to the talker input.
 
-- **CPU** (`tools/mtmd/clip.cpp`): the multi-stage TTS generator leaves
-  stage-unused graph inputs uninitialized; stale allocator memory then trips
-  `GGML_ASSERT(i01 >= 0 && i01 < ne01)` in CPU `get_rows`
-  (upstream issue #26632). Fixed by zero-filling all graph inputs per eval.
-- **Vulkan** (`tools/mtmd/models/qwen3tts-gen.cpp`): code-index views into
-  the acoustic-code cache are 4-byte offset, and the Vulkan `get_rows`
-  kernels reject misaligned buffer offsets. Fixed with `ggml_cont` on those
-  views.
+When editing the patch, remember the builder image applies it to
+`/opt/llama_cpp` — diffing against that tree drops earlier hunks for the same
+file. Reconstruct the pristine file, apply all edits, and diff once.
 
-With both patches, desktop results for the 1.7B Q8 model: CPU (8 threads)
-RTF ≈ 1.25, Vulkan RTF ≈ 0.86.
+To bump llama.cpp: change `LLAMA_CPP_COMMIT` in `docker/Dockerfile` and drop
+patch hunks as upstream fixes land.
 
-On-phone findings (Galaxy Z Fold5, SD 8 Gen 2 / Adreno 740, Android 16):
+## Device notes
 
-- **Adreno Vulkan driver**: cannot compile llama.cpp's compute shaders at
-  all (`vk::Device::createComputePipeline: ErrorUnknown` on the first talker
-  decode) — the Vulkan backend is compiled out of the Android build.
-- **Adreno OpenCL**: Qualcomm's kernels run the talker LLM but SIGABRT on
-  the codec graph, so "GPU (experimental)" mode offloads **talker layers
-  only**; the codec always runs on CPU (`mmproj_use_gpu=false`).
-- Native C++ exceptions from a backend are caught at the JNI boundary and
-  the chunk is retried on CPU in-process; a hard native abort kills the
-  `:engine` process, and a crash-marker file makes the next run start on
-  CPU automatically.
+Measured with the 1.7B model, 44-character sentence:
 
-Peak memory for 1.7B Q4_K_M + Q8 mmproj is ~2.5–3 GB — comfortably inside an
-8 GB phone. A 0.6B variant would halve that, but nobody has published a 0.6B
-**mmproj** GGUF yet; converting one from the original checkpoint is the
-obvious follow-up (the safetensors are on brainiac).
+| Device | Backend | Result |
+|---|---|---|
+| Galaxy Z Fold5 (SD 8 Gen 2 / Adreno 740) | CPU | 3.4 s audio in ~23 s |
+| Galaxy Z Fold5 | OpenCL, Q4_0 | ~1.7× faster talker than CPU |
+| Galaxy S24 FE (Exynos 2400e / Xclipse 940) | Vulkan | 3.4 s audio in ~21 s |
 
-To bump llama.cpp: change `LLAMA_CPP_COMMIT` in `docker/Dockerfile`, and drop
-the patch once upstream fixes land.
+- **Adreno Vulkan** cannot compile llama.cpp's compute shaders
+  (`createComputePipeline: ErrorUnknown`) — use OpenCL there. Adreno's OpenCL
+  kernels are tuned for **Q4_0** only; other quants are far slower than CPU,
+  and they abort on the codec graph, so the codec always runs on CPU.
+- **Memory**: weights are mmap'd (file-backed), which keeps a 1.5 GB model off
+  the reclaim path; without it phones thrash or get lmkd-killed. The engine
+  falls back to a plain read if an mmap load fails (16 KB-page devices).
+- **Samsung throttling**: a sustained-CPU background process gets moved to the
+  little cores (`/abnormal` cpuset) within ~25 s. Active audio playback exempts
+  it, so save-mode jobs play silence while generating.
+
+Real-time generation would need the 0.6B variant; upstream llama.cpp currently
+supports only the 1.7B.
+
+## License
+
+Apache-2.0. Model weights are downloaded at runtime and carry their own
+licenses.
