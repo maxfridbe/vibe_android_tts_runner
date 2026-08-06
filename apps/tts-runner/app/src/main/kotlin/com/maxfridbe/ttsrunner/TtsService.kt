@@ -197,6 +197,11 @@ class TtsService : Service() {
             DebugLog.log(this, "TtsService", "AudioSaver init failed", e)
             fail("Could not create output file: ${e.message}"); return
         }
+        // Samsung jails sustained-CPU processes into the /abnormal cpuset
+        // (little cores only, ~10x slower) unless they are actively playing
+        // audio — verified on a Fold5 by watching /proc/pid/cpuset flip. Save
+        // mode has no playback, so keep a silent AudioTrack running.
+        val keepalive = if (save) startSilentKeepalive() else null
 
         // last-audio capture for the in-app player: raw PCM appended per chunk,
         // wrapped into a WAV when the job ends
@@ -247,6 +252,7 @@ class TtsService : Service() {
             queue.put(EOS)
             player.join()
         }
+        keepalive?.interrupt()
         DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
         finalizeLastWav()
 
@@ -265,6 +271,36 @@ class TtsService : Service() {
                 update(notif(title, "Saved to $path", 0, 0))
             }
             else -> broadcast("done", chunks.size, chunks.size, "")
+        }
+    }
+
+    /** Silent 8 kHz mono playback, ~0% CPU; exists only so the OS classifies
+     *  this process as actively playing media during save-mode generation. */
+    private fun startSilentKeepalive(): Thread = thread(name = "tts-keepalive") {
+        val rate = 8000
+        val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder()
+                .setSampleRate(rate)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(maxOf(minBuf, rate / 2))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        val silence = ByteArray(rate / 2)  // 0.25 s of zeros
+        try {
+            track.play()
+            while (!Thread.currentThread().isInterrupted) {
+                track.write(silence, 0, silence.size)  // blocks at real-time rate
+            }
+        } catch (_: InterruptedException) {
+        } catch (t: Throwable) {
+            DebugLog.log(this, "TtsService", "keepalive stopped: $t")
+        } finally {
+            runCatching { track.stop() }; track.release()
         }
     }
 
