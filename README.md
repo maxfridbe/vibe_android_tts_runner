@@ -20,6 +20,12 @@ Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase): the build
 is fully containerized, so the host needs only podman or docker — no Android
 SDK, NDK, JDK, or Gradle install.
 
+| New job | Voices | Jobs | Settings |
+|---|---|---|---|
+| ![New job](docs/screenshots/newjob.png) | ![Voices](docs/screenshots/voices.png) | ![Jobs](docs/screenshots/jobs.png) | ![Settings](docs/screenshots/settings.png) |
+
+<sup>Screenshots: Galaxy S24 FE, Android 16.</sup>
+
 ## Build it
 
 ```sh

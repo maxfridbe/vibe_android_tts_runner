@@ -141,10 +141,10 @@ class MainActivity : AppCompatActivity() {
 
         val wide = resources.configuration.screenWidthDp >= 600
         val navItems = { menu: Menu ->
-            menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(android.R.drawable.ic_input_add)
-            menu.add(0, TAB_VOICES, 1, "Voices").setIcon(android.R.drawable.ic_btn_speak_now)
-            menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(android.R.drawable.ic_menu_recent_history)
-            menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(android.R.drawable.ic_menu_preferences)
+            menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(R.drawable.ic_add)
+            menu.add(0, TAB_VOICES, 1, "Voices").setIcon(R.drawable.ic_mic)
+            menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_history)
+            menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(R.drawable.ic_settings)
         }
 
         val root: View = if (wide) {
@@ -470,9 +470,9 @@ class MainActivity : AppCompatActivity() {
                     text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
-                head.addView(iconBtn(android.R.drawable.ic_media_play,
+                head.addView(iconBtn(R.drawable.ic_play,
                     if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v) })
-                head.addView(iconBtn(android.R.drawable.ic_menu_share, "Share preview") {
+                head.addView(iconBtn(R.drawable.ic_share, "Share preview") {
                     val p = VoiceStore.previewFile(this@MainActivity, v.name, modelId)
                     if (!p.exists()) toast("Generate a preview first (▶)")
                     else thread {
@@ -480,8 +480,8 @@ class MainActivity : AppCompatActivity() {
                             .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
                     }
                 })
-                head.addView(iconBtn(android.R.drawable.ic_menu_edit, "Transcript") { transcriptDialog(v) })
-                head.addView(iconBtn(android.R.drawable.ic_menu_delete, "Delete") {
+                head.addView(iconBtn(R.drawable.ic_edit, "Transcript") { transcriptDialog(v) })
+                head.addView(iconBtn(R.drawable.ic_delete, "Delete") {
                     MaterialAlertDialogBuilder(this@MainActivity)
                         .setMessage("Delete voice “${v.name}”?")
                         .setPositiveButton("Delete") { _, _ ->
@@ -641,13 +641,13 @@ class MainActivity : AppCompatActivity() {
         col.addView(card {
             addView(TextView(context).apply { text = "Last generated audio"; textSize = 14f; setTypeface(typeface, Typeface.BOLD) })
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(iconBtn(android.R.drawable.ic_media_play, "Play last audio") {
+            row.addView(iconBtn(R.drawable.ic_play, "Play last audio") {
                 val f = lastAudio()
                 if (f.exists() && f.length() > 44) playFile(f.absolutePath) else toast("No audio yet")
             })
             waveform = WaveformView(context)
             row.addView(waveform, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
-            row.addView(iconBtn(android.R.drawable.ic_menu_share, "Share last audio") {
+            row.addView(iconBtn(R.drawable.ic_share, "Share last audio") {
                 val f = lastAudio()
                 if (!f.exists() || f.length() <= 44) { toast("No audio yet"); return@iconBtn }
                 thread {
@@ -680,12 +680,12 @@ class MainActivity : AppCompatActivity() {
                     textSize = 16f; setTypeface(typeface, Typeface.BOLD)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 if (j.outputUri.isNotBlank()) {
-                    head.addView(iconBtn(android.R.drawable.ic_media_play, "Play") { playUri(Uri.parse(j.outputUri)) })
-                    head.addView(iconBtn(android.R.drawable.ic_menu_share, "Share") {
+                    head.addView(iconBtn(R.drawable.ic_play, "Play") { playUri(Uri.parse(j.outputUri)) })
+                    head.addView(iconBtn(R.drawable.ic_share, "Share") {
                         AudioShare.shareUri(this@MainActivity, Uri.parse(j.outputUri), j.title)
                     })
                 }
-                head.addView(iconBtn(android.R.drawable.ic_menu_delete, "Delete") {
+                head.addView(iconBtn(R.drawable.ic_delete, "Delete") {
                     JobStore.delete(this@MainActivity, j.id); rebuildJobs()
                 })
                 addView(head)

@@ -628,7 +628,7 @@ class TtsService : Service() {
             this, 1, Intent(this, TtsService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE)
         val b = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setOnlyAlertOnce(true)
