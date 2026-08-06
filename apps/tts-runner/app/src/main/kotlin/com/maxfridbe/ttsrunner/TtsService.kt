@@ -148,24 +148,30 @@ class TtsService : Service() {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
-        // GPU retired on this hardware: Adreno Vulkan can't compile the
-        // shaders, and Adreno OpenCL is no faster on Q8 and ~10x slower on
-        // Q4_K quants (a 35-char sentence sat for 5+ minutes). CPU always.
-        var backend = "cpu"
-        if (backendWanted != "cpu") {
-            DebugLog.log(this, "TtsService", "backend '$backendWanted' requested; forcing cpu (GPU retired, see code comment)")
+        val model = ModelManager.selectedModel(this)
+        if (model == null) {
+            fail("No model downloaded — open TTS Runner first"); return
         }
-        if (marker.exists() && backendWanted != "cpu") {
+        // GPU only for Q4_0: the Adreno OpenCL kernels are tuned for that
+        // quant (measured 1.7x talker speedup vs CPU); on Q4_K/Q8 the GPU is
+        // equal-to-10x-slower, and Adreno Vulkan can't compile the shaders at
+        // all. "gpu-force" (adb testing) bypasses the model gate.
+        var backend = when {
+            backendWanted == "gpu-force" -> "gpu"
+            backendWanted == "gpu" && model.gpuCapable -> "gpu"
+            else -> "cpu"
+        }
+        if (backendWanted == "gpu" && !model.gpuCapable) {
+            DebugLog.log(this, "TtsService", "gpu requested but ${model.id} is not gpu-capable; using cpu")
+            broadcast("note", 0, 0, "GPU needs the Q4_0 model — using CPU")
+        }
+        if (marker.exists() && backend != "cpu") {
             backend = "cpu"
             DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; falling back to cpu")
             broadcast("note", 0, 0, "Previous run died mid-generation — using CPU for this run")
         }
         marker.writeText(backend)
         DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
-        val model = ModelManager.selectedModel(this)
-        if (model == null) {
-            fail("No model downloaded — open TTS Runner first"); return
-        }
         val voice = VoiceStore.list(this).find { it.name == voiceName } ?: VoiceStore.defaultVoice(this)
         if (voice == null) {
             fail("No voice imported — add one in TTS Runner"); return

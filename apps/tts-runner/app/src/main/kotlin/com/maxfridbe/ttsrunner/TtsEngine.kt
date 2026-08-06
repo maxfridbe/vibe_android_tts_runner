@@ -21,6 +21,9 @@ object TtsEngine {
     @JvmStatic external fun nLastError(): String
     /** One line per ggml compute device with free/total memory. */
     @JvmStatic external fun nDeviceInfo(): String
+    /** Requantize a GGUF (e.g. Q8_0 -> Q4_0 for the Adreno GPU kernels).
+     *  Blocking, several minutes; call on a worker thread. */
+    @JvmStatic external fun nQuantize(srcPath: String, dstPath: String, type: String): Boolean
 
     /** Returns a complete WAV file (24 kHz mono s16) or null on failure/cancel. */
     @JvmStatic external fun nGenerate(

@@ -20,6 +20,11 @@ object ModelManager {
         val mmprojUrl: String,
         val mmprojFile: String,
         val totalBytes: Long,
+        /** Nobody hosts this quant: derive it locally from another catalog
+         *  entry's talker via llama.cpp's quantizer (talkerUrl unused). */
+        val quantizeFrom: String? = null,
+        val quantizeType: String? = null,
+        val gpuCapable: Boolean = false,
     )
 
     val CATALOG = listOf(
@@ -40,6 +45,18 @@ object ModelManager {
             mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
             mmprojFile = "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
             totalBytes = 1_847_874_400L + 446_422_912L,
+        ),
+        CatalogModel(
+            id = "1.7b-q4_0-gpu",
+            label = "Qwen3-TTS 1.7B Q4_0 (GPU-capable, converted from Q8 on device)",
+            talkerUrl = "",  // derived locally, see quantizeFrom
+            talkerFile = "Qwen3-TTS-12Hz-1.7B-Base-Q4_0.gguf",
+            mmprojUrl = "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+            mmprojFile = "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+            totalBytes = 982_979_424L + 446_422_912L,
+            quantizeFrom = "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+            quantizeType = "Q4_0",
+            gpuCapable = true,   // Adreno OpenCL kernels are tuned for Q4_0
         ),
     )
 
@@ -79,7 +96,27 @@ object ModelManager {
     fun download(ctx: Context, m: CatalogModel, listener: DownloadListener) {
         downloadCanceled = false
         try {
-            downloadOne(ctx, m.talkerUrl, m.talkerFile, listener)
+            if (m.quantizeFrom != null) {
+                val src = File(modelsDir(ctx), m.quantizeFrom)
+                if (!src.exists()) {
+                    // fetch the source quant first (find its catalog entry for the url)
+                    val srcModel = CATALOG.first { it.talkerFile == m.quantizeFrom }
+                    downloadOne(ctx, srcModel.talkerUrl, srcModel.talkerFile, listener)
+                }
+                val dest = File(modelsDir(ctx), m.talkerFile)
+                if (!dest.exists()) {
+                    listener.onProgress("converting to ${m.quantizeType} (a few minutes)…", 0, 0)
+                    val tmp = File(modelsDir(ctx), "${m.talkerFile}.part")
+                    tmp.delete()
+                    if (!TtsEngine.nQuantize(src.absolutePath, tmp.absolutePath, m.quantizeType!!)) {
+                        tmp.delete()
+                        throw java.io.IOException("quantize failed: ${TtsEngine.nLastError()}")
+                    }
+                    if (!tmp.renameTo(dest)) throw java.io.IOException("rename failed")
+                }
+            } else {
+                downloadOne(ctx, m.talkerUrl, m.talkerFile, listener)
+            }
             downloadOne(ctx, m.mmprojUrl, m.mmprojFile, listener)
             listener.onDone()
         } catch (e: InterruptedException) {

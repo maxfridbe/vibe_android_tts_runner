@@ -118,12 +118,19 @@ class MainActivity : Activity() {
 
         header("2 · Engine")
         val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
-        prefs.edit().putString("backend", "cpu").apply()  // clear any stale gpu pref
+        val backendGroup = RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
+        backendGroup.addView(RadioButton(this).apply { text = "CPU"; id = 100 })
+        backendGroup.addView(RadioButton(this).apply { text = "GPU"; id = 101 })
+        root.addView(backendGroup)
         root.addView(TextView(this).apply {
-            text = "CPU (${Runtime.getRuntime().availableProcessors()} cores). GPU is disabled: " +
-                "the Adreno Vulkan driver can't compile the model's shaders and Adreno OpenCL " +
-                "is slower than CPU for this model."
+            textSize = 12f
+            text = "GPU needs the Q4_0 model (the Adreno kernels are tuned for it; ~1.7x faster " +
+                "speech generation). Other models always run on CPU."
         })
+        backendGroup.check(if (prefs.getString("backend", "cpu") == "gpu") 101 else 100)
+        backendGroup.setOnCheckedChangeListener { _, id ->
+            prefs.edit().putString("backend", if (id == 101) "gpu" else "cpu").apply()
+        }
         val pm = getSystemService(android.os.PowerManager::class.java)
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             root.addView(Button(this).apply {

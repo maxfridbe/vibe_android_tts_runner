@@ -142,6 +142,49 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nUnload(JNIEnv *, jclass) {
     g_engine.reset();
 }
 
+// Local requantization: nobody hosts a Q4_0 of this model, but the Adreno
+// OpenCL kernels are tuned for Q4_0 specifically, so the app derives it from
+// the downloaded Q8_0 (streaming, low memory, a few minutes on-device).
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nQuantize(JNIEnv * env, jclass,
+        jstring jsrc, jstring jdst, jstring jtype) try {
+    g_last_error.clear();
+    const std::string src  = jstr(env, jsrc);
+    const std::string dst  = jstr(env, jdst);
+    const std::string type = jstr(env, jtype);
+
+    llama_model_quantize_params qp = llama_model_quantize_default_params();
+    qp.nthread = 4;
+    qp.allow_requantize = true;
+    if (type == "Q4_0") {
+        qp.ftype = LLAMA_FTYPE_MOSTLY_Q4_0;
+    } else if (type == "Q4_K_M") {
+        qp.ftype = LLAMA_FTYPE_MOSTLY_Q4_K_M;
+    } else {
+        g_last_error = "unsupported quant type " + type;
+        return JNI_FALSE;
+    }
+
+    llama_backend_init();
+    LOGI("nQuantize: %s -> %s (%s)", src.c_str(), dst.c_str(), type.c_str());
+    const int64_t t0 = ggml_time_us();
+    if (llama_model_quantize(src.c_str(), dst.c_str(), &qp) != 0) {
+        g_last_error = "llama_model_quantize failed";
+        LOGE("%s", g_last_error.c_str());
+        return JNI_FALSE;
+    }
+    LOGI("nQuantize done in %.1fs", (ggml_time_us() - t0) / 1e6);
+    return JNI_TRUE;
+} catch (const std::exception & e) {
+    g_last_error = std::string("native exception during quantize: ") + e.what();
+    LOGE("%s", g_last_error.c_str());
+    return JNI_FALSE;
+} catch (...) {
+    g_last_error = "unknown native exception during quantize";
+    LOGE("%s", g_last_error.c_str());
+    return JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
     g_cancel = true;
