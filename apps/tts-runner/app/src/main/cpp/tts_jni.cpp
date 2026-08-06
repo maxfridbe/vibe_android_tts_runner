@@ -75,10 +75,11 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     params.mmproj.path = jstr(env, jmmproj);
     params.embedding   = true;  // gen_audio needs hidden states
     params.n_batch     = 512;
-    // per-utterance use peaks ~1.3k positions (speaker ref + text + frames);
-    // 4096 halves KV-cache RAM vs 8192 (~450 MB on the 1.7B) — phones OOM-kill
-    // silently under memory pressure, so every MB counts
-    params.n_ctx       = 4096;
+    // One utterance peaks around 1.3k positions (speaker ref + text + frames)
+    // and each chunk starts from a cleared cache, so 2048 is ~1.5x headroom
+    // and halves KV-cache RAM again (~224 MB on the 1.7B). Phones get
+    // lmkd-killed silently under pressure, so every MB counts.
+    params.n_ctx       = 2048;
     params.cpuparams.n_threads = nThreads > 0 ? nThreads : 4;
     params.warmup      = false;
     // mmap keeps model weights file-backed: the kernel can evict them under

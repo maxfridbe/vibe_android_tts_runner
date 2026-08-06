@@ -41,6 +41,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var content: FrameLayout
     private lateinit var memMeter: TextView
     private lateinit var statusPane: View
+    private var swipeDetector: android.view.GestureDetector? = null
+    private var navSelect: ((Int) -> Unit)? = null
     private val tabs = mutableMapOf<Int, View>()
     private var currentTab = TAB_NEWJOB
 
@@ -127,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         // persistent status pane: what the engine is doing right now, visible
         // from every tab (a job started from the share sheet or a re-run is
         // just as interesting as one started on the New job tab)
-        statusPane = buildStatusPane()
+        statusPane = buildStatusPane().noStateSave()
         val contentWithMeter = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(FrameLayout(context).apply {
@@ -152,6 +154,7 @@ class MainActivity : AppCompatActivity() {
             navItems(rail.menu)
             rail.setOnItemSelectedListener { showTab(it.itemId); true }
             rail.selectedItemId = currentTab
+            navSelect = { id -> rail.selectedItemId = id }
             LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 addView(rail, LinearLayout.LayoutParams(
@@ -163,6 +166,7 @@ class MainActivity : AppCompatActivity() {
             navItems(bottom.menu)
             bottom.setOnItemSelectedListener { showTab(it.itemId); true }
             bottom.selectedItemId = currentTab
+            navSelect = { id -> bottom.selectedItemId = id }
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(contentWithMeter, LinearLayout.LayoutParams(
@@ -171,6 +175,20 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         }
+        // horizontal swipe switches tabs (content scrolls vertically, so
+        // horizontal gestures are free)
+        val swipe = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(e1: android.view.MotionEvent?, e2: android.view.MotionEvent, vx: Float, vy: Float): Boolean {
+                val dx = e2.x - (e1?.x ?: return false)
+                if (kotlin.math.abs(dx) < dp(64) || kotlin.math.abs(dx) < kotlin.math.abs(e2.y - e1.y)) return false
+                val order = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_SETTINGS)
+                val next = order.indexOf(currentTab) + if (dx < 0) 1 else -1
+                order.getOrNull(next)?.let { selectTab(it) }
+                return true
+            }
+        })
+        swipeDetector = swipe
+
         setContentView(root)
         showTab(currentTab)
     }
@@ -178,6 +196,18 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt("tab", currentTab)
+    }
+
+    /** These views are built in code with hand-assigned ids that repeat across
+     *  tabs, so Android's view-state save/restore can hand a RadioButton's
+     *  state to a different widget with the same id after a configuration
+     *  change (ClassCastException in CompoundButton.onRestoreInstanceState —
+     *  seen when unfolding). Every tab is rebuilt from app state anyway. */
+    private fun View.noStateSave(): View {
+        isSaveEnabled = false
+        isSaveFromParentEnabled = false
+        if (this is ViewGroup) for (i in 0 until childCount) getChildAt(i).noStateSave()
+        return this
     }
 
     private fun showTab(id: Int) {
@@ -189,7 +219,7 @@ class MainActivity : AppCompatActivity() {
                 TAB_VOICES -> buildVoicesTab()
                 TAB_JOBS -> buildJobsTab()
                 else -> buildSettingsTab()
-            }
+            }.noStateSave()
         }
         when (id) {
             TAB_VOICES -> rebuildVoices()
@@ -198,6 +228,20 @@ class MainActivity : AppCompatActivity() {
         }
         content.removeAllViews()
         content.addView(v)
+        v.noStateSave()
+    }
+
+    // every touch reaches the detector here; children still handle their own
+    // gestures because this only observes
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        swipeDetector?.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /** Switch tab and move the navigation highlight with it. */
+    private fun selectTab(id: Int) {
+        val nav = navSelect
+        if (nav != null) nav(id) else showTab(id)
     }
 
     /** Keep the :engine process (and its loaded model) alive while visible. */
@@ -665,6 +709,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildJobs() {
         if (!::jobsList.isInitialized) return
+        val engineAlive = runCatching {
+            getSystemService(android.app.ActivityManager::class.java)
+                .runningAppProcesses?.any { it.processName.endsWith(":engine") } == true
+        }.getOrDefault(false)
+        JobStore.reconcile(this, engineAlive)
         val lf = lastAudio()
         if (lf.exists() && lf.length() > 44) thread { waveform.loadWav(lf) }
         jobsList.removeAllViews()
@@ -730,7 +779,7 @@ class MainActivity : AppCompatActivity() {
     private fun rerunJob(j: JobStore.Job, voiceName: String) {
         startTtsJob(j.text, j.title, j.save, voiceName)
         toast("Re-running “${j.title.ifBlank { j.text.take(24) }}” with $voiceName")
-        showTab(TAB_NEWJOB)
+        selectTab(TAB_NEWJOB)
     }
 
     // ---- Settings tab ------------------------------------------------------

@@ -35,6 +35,22 @@ object JobStore {
 
     fun list(ctx: Context): List<Job> = synchronized(lock) { load(ctx) }
 
+    /** A job left "running" by a killed engine process would sit there
+     *  forever; the UI calls this on start so the history tells the truth. */
+    fun reconcile(ctx: Context, engineAlive: Boolean) = synchronized(lock) {
+        val jobs = load(ctx)
+        var changed = false
+        for ((i, j) in jobs.withIndex()) {
+            // the newest job may legitimately still be running
+            if (j.status == "running" && !(i == 0 && engineAlive)) {
+                j.status = "failed"
+                if (j.error.isBlank()) j.error = "interrupted (app or engine stopped)"
+                changed = true
+            }
+        }
+        if (changed) store(ctx, jobs)
+    }
+
     fun add(ctx: Context, job: Job) = synchronized(lock) {
         val jobs = load(ctx)
         jobs.removeAll { it.id == job.id }
