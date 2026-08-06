@@ -25,6 +25,9 @@ object ModelManager {
         val quantizeFrom: String? = null,
         val quantizeType: String? = null,
         val gpuCapable: Boolean = false,
+        /** VoiceDesign: no speaker encoder, so it can't clone voices — it is
+         *  only used by the voice designer, never for regular TTS jobs. */
+        val designOnly: Boolean = false,
     )
 
     val CATALOG = listOf(
@@ -58,6 +61,16 @@ object ModelManager {
             quantizeType = "Q4_0",
             gpuCapable = true,   // Adreno OpenCL kernels are tuned for Q4_0
         ),
+        CatalogModel(
+            id = "1.7b-vd",
+            label = "Qwen3-TTS 1.7B VoiceDesign (voice designer only — not hosted, push manually)",
+            talkerUrl = "",   // nobody hosts these GGUFs; converted on brainiac, pushed via adb
+            talkerFile = "Qwen3-TTS-VD-Q4_K_M.gguf",
+            mmprojUrl = "",
+            mmprojFile = "mmproj-Qwen3-TTS-VD-Q8_0.gguf",
+            totalBytes = 1_035_965_568L + 422_392_192L,
+            designOnly = true,
+        ),
     )
 
     fun modelsDir(ctx: Context): File {
@@ -71,9 +84,13 @@ object ModelManager {
     fun selectedModel(ctx: Context): CatalogModel? {
         val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
         val id = prefs.getString("model_id", null)
-        val m = CATALOG.find { it.id == id } ?: CATALOG.firstOrNull { isDownloaded(ctx, it) }
+        val m = CATALOG.find { it.id == id && !it.designOnly }
+            ?: CATALOG.firstOrNull { !it.designOnly && isDownloaded(ctx, it) }
         return m?.takeIf { isDownloaded(ctx, it) }
     }
+
+    fun designModel(ctx: Context): CatalogModel? =
+        CATALOG.find { it.designOnly && isDownloaded(ctx, it) }
 
     fun selectModel(ctx: Context, id: String) {
         ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE).edit().putString("model_id", id).apply()

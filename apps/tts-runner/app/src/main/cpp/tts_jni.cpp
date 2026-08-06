@@ -257,7 +257,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
 // 1/12.5 s of audio, so the callback doubles as a live duration estimate.
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
-        jstring jtext, jstring jspeaker, jstring jlang,
+        jstring jtext, jstring jspeaker, jstring jlang, jstring jinstruct,
         jint maxFrames, jint seed, jfloat temp, jfloat topP, jobject progressCb) try {
     if (!g_engine) {
         g_last_error = "engine not loaded";
@@ -273,9 +273,10 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         onProgress = env->GetMethodID(cbCls, "onProgress", "(II)V");
     }
 
-    const std::string text    = jstr(env, jtext);
-    const std::string speaker = jstr(env, jspeaker);
-    const std::string lang    = jstr(env, jlang);
+    const std::string text     = jstr(env, jtext);
+    const std::string speaker  = jstr(env, jspeaker);
+    const std::string lang     = jstr(env, jlang);
+    const std::string instruct = jstr(env, jinstruct);  // VoiceDesign description
 
     // fresh KV cache per utterance; the model is prompt + autoregressive codes
     llama_memory_clear(llama_get_memory(eng.lctx), true);
@@ -343,6 +344,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     inp.prompt_len  = text.size();
     inp.speaker_ref = speaker_bitmap.get();
     inp.lang        = lang.c_str();
+    inp.instruct    = instruct.empty() ? nullptr : instruct.c_str();
     inp.top_k       = 50;    // official subtalker config: top_k 50, top_p 1.0
     inp.top_p       = 1.0f;
     inp.out_type    = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;

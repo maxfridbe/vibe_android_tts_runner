@@ -516,15 +516,31 @@ class MainActivity : AppCompatActivity() {
     // ---- voice designer ----------------------------------------------------
 
     private var designing = false
+    private var designInstruct = ""
 
     private fun designVoiceDialog() {
         if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        val hasVd = ModelManager.designModel(this) != null
+        val edit = EditText(this).apply {
+            hint = if (hasVd) "Describe the voice, e.g. “a deep, gravelly old male voice, slow delivery” — or leave empty to roll a random one"
+                   else "VoiceDesign model not installed — leave empty to roll a random voice"
+            setText(designInstruct)
+            minLines = 2
+            isEnabled = true
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
         MaterialAlertDialogBuilder(this)
             .setTitle("Design a voice")
-            .setMessage("Rolls a brand-new random voice (no reference audio). Listen, keep it if you " +
-                "like it, or roll again. Kept voices are tied to no model — they become normal " +
-                "reference audio you can use anywhere.")
-            .setPositiveButton("Roll a voice") { _, _ -> rollDesignVoice() }
+            .setMessage("Listen to the result, keep it if you like it, or roll again. Kept voices become " +
+                "normal reference audio usable with any model.")
+            .setView(edit)
+            .setPositiveButton("Roll") { _, _ ->
+                designInstruct = edit.text.toString().trim()
+                if (designInstruct.isNotBlank() && !hasVd) {
+                    toast("Description needs the VoiceDesign model (Settings) — rolling random instead")
+                }
+                rollDesignVoice()
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -537,9 +553,10 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TITLE, "Designing voice")
             .putExtra(TtsService.EXTRA_VOICE, "")
             .putExtra(TtsService.EXTRA_DESIGN, true)
+            .putExtra(TtsService.EXTRA_INSTRUCT, designInstruct)
             .putExtra(TtsService.EXTRA_SEED, Random.nextInt(1, 1 shl 30))
             .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu")))
-        toast("Rolling a new voice…")
+        toast(if (designInstruct.isBlank()) "Rolling a random voice…" else "Designing: “${designInstruct.take(48)}…”")
     }
 
     private fun offerKeepDesignedVoice() {

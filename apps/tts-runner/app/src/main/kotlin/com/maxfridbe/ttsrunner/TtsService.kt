@@ -41,6 +41,7 @@ class TtsService : Service() {
         const val EXTRA_PREVIEW = "preview"  // true: cache the output as the voice's preview clip
         const val EXTRA_DESIGN = "design"    // true: no speaker ref — roll a fresh random voice
         const val EXTRA_SEED = "seed"        // base seed; 0 = default
+        const val EXTRA_INSTRUCT = "instruct" // voice description (VoiceDesign model)
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -93,14 +94,15 @@ class TtsService : Service() {
                 val preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
                 val design = intent.getBooleanExtra(EXTRA_DESIGN, false)
                 val seed = intent.getIntExtra(EXTRA_SEED, 0)
-                startJob(text, title, voice, backend, save, preview, design, seed)
+                val instruct = intent.getStringExtra(EXTRA_INSTRUCT) ?: ""
+                startJob(text, title, voice, backend, save, preview, design, seed, instruct)
             }
         }
         return START_NOT_STICKY
     }
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean,
-                         preview: Boolean = false, design: Boolean = false, seed: Int = 0) {
+                         preview: Boolean = false, design: Boolean = false, seed: Int = 0, instruct: String = "") {
         // one job at a time; a new share replaces the current playback. The
         // takeover is asynchronous: the previous thread is signalled here and
         // the NEW thread waits for it without a deadline (a 3s join on this
@@ -125,7 +127,7 @@ class TtsService : Service() {
                 previous?.join()
                 stopRequested = false
                 TtsEngine.nResetCancel()
-                runJob(text, title, voiceName, backend, save, preview, design, seed)
+                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -152,11 +154,21 @@ class TtsService : Service() {
     private val EOS = ByteArray(0)
 
     private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean,
-                       preview: Boolean, design: Boolean, seed: Int) {
+                       preview: Boolean, design: Boolean, seed: Int, instructWanted: String) {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
-        val model = ModelManager.selectedModel(this)
+        // a design job with a description needs the VoiceDesign model; without
+        // it we still roll (seed-random voice) on the regular model
+        var instruct = if (design) instructWanted else ""
+        val model = if (design && instruct.isNotBlank()) {
+            val vd = ModelManager.designModel(this)
+            if (vd == null) {
+                broadcast("note", 0, 0, "VoiceDesign model not installed — rolling a random voice instead")
+                instruct = ""
+                ModelManager.selectedModel(this)
+            } else vd
+        } else ModelManager.selectedModel(this)
         if (model == null) {
             fail("No model downloaded — open TTS Runner first"); return
         }
@@ -248,7 +260,10 @@ class TtsService : Service() {
             val onFrames = { framesDone: Int, framesMax: Int ->
                 reportProgress(title, i, chunks.size, framesDone, framesMax)
             }
-            var pcm = generatePlausible(chunk, voice?.file?.absolutePath ?: "", seed, onFrames)
+            // design rolls skip the plausibility guard: any voice is valid, and
+            // re-rolling a design triples an already slow job for nothing
+            var pcm = if (design) generateOnce(chunk, "", instruct, seed, onFrames)
+                      else generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
             if (pcm == null && !stopRequested && backend != "cpu") {
                 // a caught native exception drops the engine; retry this chunk
                 // on CPU in-process instead of dying and using the marker path
@@ -258,7 +273,7 @@ class TtsService : Service() {
                 marker.writeText(backend)
                 loadedKey = null
                 if (ensureLoaded(model, backend)) {
-                    pcm = generatePlausible(chunk, voice?.file?.absolutePath ?: "", seed, onFrames)
+                    pcm = generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
                 }
             }
             if (pcm == null) {
@@ -429,7 +444,20 @@ class TtsService : Service() {
      *  runaway (near max_new_tokens), self-repeating (way over the expected
      *  duration for the text), or instant-EOS outputs and re-roll the seed up
      *  to 2 times. Returns raw PCM (s16 mono 24 kHz) or null. */
-    private fun generatePlausible(chunk: String, voicePath: String, baseSeed: Int, onFrames: (Int, Int) -> Unit): ByteArray? {
+    /** Single generation pass, no plausibility re-rolls. */
+    private fun generateOnce(chunk: String, voicePath: String, instruct: String, seed: Int, onFrames: (Int, Int) -> Unit): ByteArray? {
+        val maxFrames = ((chunk.length / 13.0 * 12.5 * 1.8).toInt() + 32).coerceIn(96, 2048)
+        val wav = TtsEngine.nGenerate(chunk, voicePath, "en", instruct, maxFrames, seed, 0.9f, 1.0f,
+            object : TtsEngine.ProgressCallback {
+                override fun onProgress(framesDone: Int, framesMax: Int) {
+                    if (stopRequested) TtsEngine.nCancel()
+                    onFrames(framesDone, framesMax)
+                }
+            }) ?: return null
+        return wavToPcm(wav)
+    }
+
+    private fun generatePlausible(chunk: String, voicePath: String, instruct: String, baseSeed: Int, onFrames: (Int, Int) -> Unit): ByteArray? {
         // measured post-double-read-fix: ~13 chars/s of speech; cap at 1.8x
         // expected so a runaway generation is bounded tightly (frame cost is
         // ~0.4-2 s on a throttled phone)
@@ -440,7 +468,7 @@ class TtsService : Service() {
             if (stopRequested) return null
             val seed = if (attempt == 0) (if (baseSeed != 0) baseSeed else 42) else Random.nextInt(1, 1 shl 30)
             val wav = TtsEngine.nGenerate(
-                chunk, voicePath, "en", maxFrames, seed, 0.9f, 1.0f,  // official qwen-tts talker params
+                chunk, voicePath, "en", instruct, maxFrames, seed, 0.9f, 1.0f,  // official qwen-tts talker params
                 object : TtsEngine.ProgressCallback {
                     override fun onProgress(framesDone: Int, framesMax: Int) {
                         // re-assert cancel: a nCancel that raced a generate-call

@@ -62,21 +62,98 @@ index b6c95ef..e768a18 100644
  
          ggml_tensor * embd_g = ggml_view_2d(ctx0, model.gen_code_embd_w, model.gen_code_embd_w->ne[0], model.gen_code_embd_w->ne[1],
                                              model.gen_code_embd_w->nb[1], (size_t) (g - 1) * model.gen_code_embd_w->nb[2]);
---- a/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 16:16:51.842923735 +0000
-+++ b/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 16:16:51.857494121 +0000
-@@ -205,10 +205,11 @@
-         top_p = inp->top_p > 0 ? inp->top_p : 1.0f;
-         out_type = inp->out_type;
+diff -ruN a/conversion/qwen3tts.py b/conversion/qwen3tts.py
+--- a/conversion/qwen3tts.py	2026-08-06 21:46:27.484039880 +0000
++++ b/conversion/qwen3tts.py	2026-08-06 21:46:27.488397830 +0000
+@@ -216,6 +216,12 @@
+         if hparams is None:
+             hparams = ModelBase.load_hparams(dir_model, is_mistral_format=False)
+         hparams["text_config"] = {"hidden_size": hparams["talker_config"]["hidden_size"]}
++        # VoiceDesign has no speaker encoder (it designs voices from text
++        # instructions, it does not clone) -- stub the config so the base
++        # class initializes; no spkenc tensors exist so none get written.
++        self._has_spkenc = "speaker_encoder_config" in hparams
++        if not self._has_spkenc:
++            hparams["speaker_encoder_config"] = {"enc_dim": 1024, "sample_rate": 24000}
+         # ECAPA-TDNN has a fixed 4-stage backbone, but MmprojModel.__init__ needs a n_block_keys
+         hparams["speaker_encoder_config"]["n_layers"] = 4
+         super().__init__(dir_model, *args, hparams=hparams, **kwargs)
+@@ -226,8 +232,9 @@
  
--        // the text stream keeps flowing during generation: after frame k, the input adds
--        // trailing text row k on top of the codes embedding, then tts_eos, then tts_pad
--        for (int i = 3; i < n_ids - 5; i++) overlay.push_back(row(ids[(size_t) i]));
--        overlay.push_back(row(tts_eos));
-+        // official reference behaviour (non-streaming mode): every generation
-+        // step adds ONLY the tts_pad embedding on top of the codec embedding.
-+        // Re-overlaying the text rows here feeds the utterance to the model a
-+        // second time mid-generation, which makes it read the text twice
-+        // (~2.3x audio duration, confirmed by whisper transcripts).
-         overlay.push_back(row(tts_pad));
+     def set_gguf_parameters(self):
+         self.gguf_writer.add_file_type(self.ftype)
+-        self.gguf_writer.add_clip_has_audio_encoder(True)
+-        self.gguf_writer.add_clip_audio_projector_type(gguf.VisionProjectorType.QWEN3TTS_SPKENC)
++        self.gguf_writer.add_clip_has_audio_encoder(self._has_spkenc)
++        if self._has_spkenc:
++            self.gguf_writer.add_clip_audio_projector_type(gguf.VisionProjectorType.QWEN3TTS_SPKENC)
  
-         return 0;
+         # handle speaker encoder config
+         self.gguf_writer.add_audio_projection_dim(self.n_embd_text)
+diff -ruN a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
+--- a/tools/mtmd/mtmd.cpp	2026-08-06 21:46:27.478624625 +0000
++++ b/tools/mtmd/mtmd.cpp	2026-08-06 21:46:27.487284120 +0000
+@@ -362,7 +362,9 @@
+         ctx_v = res.ctx_v;
+         ctx_a = res.ctx_a;
+         ctx_gen_a = res.ctx_gen_a;
+-        if (!ctx_v && !ctx_a) {
++        if (!ctx_v && !ctx_a && !ctx_gen_a) {
++            // a gen-audio-only mmproj is valid: Qwen3-TTS VoiceDesign has a
++            // codec but no speaker encoder (it designs voices, it does not clone)
+             throw std::runtime_error(string_format("Failed to load CLIP model from %s\n", mmproj_fname));
+         }
+ 
+@@ -379,7 +381,8 @@
+ 
+         // since we already validate n_embd of vision and audio mmproj,
+         // we can safely assume that they are the same
+-        int n_embd_clip = clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a);
++        // (gen-audio-only mmprojs have neither encoder; skip the check then)
++        int n_embd_clip = (ctx_v || ctx_a) ? clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a) : n_embd_text;
+         if (n_embd_text > 0 && n_embd_text != n_embd_clip) {
+             throw std::runtime_error(string_format(
+                 "mismatch between text model (n_embd = %d) and mmproj (n_embd = %d)\n"
+diff -ruN a/tools/mtmd/mtmd-helper-gen.cpp b/tools/mtmd/mtmd-helper-gen.cpp
+--- a/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 21:46:27.479655578 +0000
++++ b/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 21:46:27.487938630 +0000
+@@ -171,7 +171,25 @@
+         }
+         ids.resize((size_t) n_ids);
+ 
++        // VoiceDesign: the instruction is a plain user chat turn whose token
++        // embeddings are prepended to the talker input (official reference:
++        // talker_input_embeds[i].append(text_projection(embed(instruct_id))))
++        std::vector<llama_token> instruct_ids;
++        if (inp->instruct && inp->instruct[0]) {
++            const std::string full_instruct =
++                std::string("<|im_start|>user\n") + inp->instruct + "<|im_end|>\n";
++            instruct_ids.resize(full_instruct.size() + 16);
++            int n_inst = llama_tokenize(vocab, full_instruct.c_str(), (int32_t) full_instruct.size(),
++                                        instruct_ids.data(), (int32_t) instruct_ids.size(), false, true);
++            if (n_inst < 0) {
++                LOG_ERR("mtmd_helper_gen_audio: instruct tokenization failed\n");
++                return 1;
++            }
++            instruct_ids.resize((size_t) n_inst);
++        }
++
+         std::vector<std::vector<float>> prompt;
++        for (llama_token t : instruct_ids) prompt.push_back(row(t));
+         for (int i = 0; i < 3; i++) prompt.push_back(row(ids[(size_t) i]));
+         prompt.push_back(sum_row(tts_pad, c_think));
+         prompt.push_back(sum_row(tts_pad, c_think_b));
+diff -ruN a/tools/mtmd/mtmd-helper.h b/tools/mtmd/mtmd-helper.h
+--- a/tools/mtmd/mtmd-helper.h	2026-08-06 21:46:27.479253065 +0000
++++ b/tools/mtmd/mtmd-helper.h	2026-08-06 21:46:27.487724544 +0000
+@@ -182,6 +182,9 @@
+ 
+     mtmd_bitmap * speaker_ref; // optional, can be NULL
+     const char * lang; // optional, can be NULL
++    // optional voice-design instruction for VoiceDesign models, e.g.
++    // "A deep, gravelly male voice with a slow delivery". NULL/empty = none.
++    const char * instruct;
+ 
+     int32_t top_k;
+     float   top_p;
+

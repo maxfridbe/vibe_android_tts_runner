@@ -25,9 +25,10 @@ object TtsEngine {
      *  Blocking, several minutes; call on a worker thread. */
     @JvmStatic external fun nQuantize(srcPath: String, dstPath: String, type: String): Boolean
 
-    /** Returns a complete WAV file (24 kHz mono s16) or null on failure/cancel. */
+    /** Returns a complete WAV file (24 kHz mono s16) or null on failure/cancel.
+     *  instruct: VoiceDesign description ("" for none, needs a VD model). */
     @JvmStatic external fun nGenerate(
-        text: String, speakerWavPath: String, lang: String,
+        text: String, speakerWavPath: String, lang: String, instruct: String,
         maxFrames: Int, seed: Int, temp: Float, topP: Float,
         progress: ProgressCallback?,
     ): ByteArray?
