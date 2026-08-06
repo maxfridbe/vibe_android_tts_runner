@@ -1,0 +1,260 @@
+// JNI wrapper around llama.cpp's Qwen3-TTS support (tools/tts/tts.cpp turned
+// into a persistent engine): load talker + codec mmproj once, then generate
+// WAV per utterance with a progress callback and a cancel flag.
+#include <jni.h>
+#include <android/log.h>
+
+#include "arg.h"
+#include "common.h"
+#include "sampling.h"
+#include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <vector>
+
+#define TAG "TtsRunnerNative"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+static void llama_log_to_android(ggml_log_level level, const char * text, void *) {
+    int prio = level == GGML_LOG_LEVEL_ERROR ? ANDROID_LOG_ERROR
+             : level == GGML_LOG_LEVEL_WARN  ? ANDROID_LOG_WARN
+                                             : ANDROID_LOG_INFO;
+    __android_log_write(prio, "llama.cpp", text);
+}
+
+namespace {
+
+struct Engine {
+    common_init_result_ptr init;
+    llama_model   * model = nullptr;
+    llama_context * lctx  = nullptr;
+    mtmd::context_ptr mctx;
+    common_params params;
+    std::string backend_used;
+};
+
+std::unique_ptr<Engine> g_engine;
+std::atomic<bool> g_cancel{false};
+std::string g_last_error;
+
+std::string jstr(JNIEnv * env, jstring s) {
+    if (!s) return "";
+    const char * c = env->GetStringUTFChars(s, nullptr);
+    std::string out(c ? c : "");
+    env->ReleaseStringUTFChars(s, c);
+    return out;
+}
+
+} // namespace
+
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *, void *) {
+    llama_log_set(llama_log_to_android, nullptr);
+    return JNI_VERSION_1_6;
+}
+
+// backend: "cpu" keeps everything on the CPU; "gpu" offloads talker layers and
+// the codec to whichever compute backend ggml brings up (OpenCL on Adreno,
+// else Vulkan), with automatic per-op CPU fallback.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
+        jstring jmodel, jstring jmmproj, jstring jbackend, jint nThreads) {
+    g_engine.reset();
+    g_last_error.clear();
+
+    auto eng = std::make_unique<Engine>();
+    common_params & params = eng->params;
+
+    params.model.path  = jstr(env, jmodel);
+    params.mmproj.path = jstr(env, jmmproj);
+    params.embedding   = true;  // gen_audio needs hidden states
+    params.n_batch     = 512;
+    params.n_ctx       = 8192;
+    params.cpuparams.n_threads = nThreads > 0 ? nThreads : 4;
+    params.warmup      = false;
+
+    const std::string backend = jstr(env, jbackend);
+    if (backend == "cpu") {
+        params.n_gpu_layers   = 0;
+        params.mmproj_use_gpu = false;
+    } else {
+        params.n_gpu_layers   = 999;
+        params.mmproj_use_gpu = true;
+    }
+
+    common_init();
+    llama_backend_init();
+    llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
+
+    eng->init = common_init_from_params(params);
+    if (!eng->init || !eng->init->model() || !eng->init->context()) {
+        g_last_error = "failed to load model " + params.model.path;
+        LOGE("%s", g_last_error.c_str());
+        return JNI_FALSE;
+    }
+    eng->model = eng->init->model();
+    eng->lctx  = eng->init->context();
+
+    mtmd_context_params mparams = mtmd_context_params_default();
+    mparams.use_gpu = params.mmproj_use_gpu;
+    mparams.n_threads = params.cpuparams.n_threads;
+    eng->mctx.reset(mtmd_init_from_file(params.mmproj.path.c_str(), eng->model, mparams));
+    if (!eng->mctx) {
+        g_last_error = "failed to load mmproj " + params.mmproj.path;
+        LOGE("%s", g_last_error.c_str());
+        return JNI_FALSE;
+    }
+    if (mtmd_gen_audio_get_info(eng->mctx.get()).type == MTMD_GEN_AUDIO_TYPE_NONE) {
+        g_last_error = "mmproj does not support audio generation";
+        LOGE("%s", g_last_error.c_str());
+        return JNI_FALSE;
+    }
+
+    eng->backend_used = backend;
+    g_engine = std::move(eng);
+    LOGI("engine loaded (backend=%s threads=%d)", backend.c_str(), params.cpuparams.n_threads);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nUnload(JNIEnv *, jclass) {
+    g_engine.reset();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
+    g_cancel = true;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nLastError(JNIEnv * env, jclass) {
+    return env->NewStringUTF(g_last_error.c_str());
+}
+
+// Returns a complete WAV file as bytes, or null on failure/cancel.
+// progressCb (may be null) receives (framesDone, framesMax); one frame is
+// 1/12.5 s of audio, so the callback doubles as a live duration estimate.
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
+        jstring jtext, jstring jspeaker, jstring jlang,
+        jint maxFrames, jint seed, jfloat temp, jfloat topP, jobject progressCb) {
+    if (!g_engine) {
+        g_last_error = "engine not loaded";
+        return nullptr;
+    }
+    g_cancel = false;
+    g_last_error.clear();
+    Engine & eng = *g_engine;
+
+    jmethodID onProgress = nullptr;
+    if (progressCb) {
+        jclass cbCls = env->GetObjectClass(progressCb);
+        onProgress = env->GetMethodID(cbCls, "onProgress", "(II)V");
+    }
+
+    const std::string text    = jstr(env, jtext);
+    const std::string speaker = jstr(env, jspeaker);
+    const std::string lang    = jstr(env, jlang);
+
+    // fresh KV cache per utterance; the model is prompt + autoregressive codes
+    llama_memory_clear(llama_get_memory(eng.lctx), true);
+
+    mtmd::bitmap_ptr speaker_bitmap;
+    if (!speaker.empty()) {
+        auto wrapper = mtmd_helper_bitmap_init_from_file(eng.mctx.get(), speaker.c_str(), false);
+        if (!wrapper.bitmap) {
+            g_last_error = "failed to load speaker file " + speaker;
+            LOGE("%s", g_last_error.c_str());
+            return nullptr;
+        }
+        speaker_bitmap.reset(wrapper.bitmap);
+    }
+
+    common_params_sampling sparams;
+    sparams.seed  = seed;
+    sparams.temp  = temp;
+    sparams.top_p = topP;
+    sparams.top_k = 40;
+    std::unique_ptr<common_sampler, decltype(&common_sampler_free)>
+        smpl(common_sampler_init(eng.model, sparams), common_sampler_free);
+    if (!smpl) {
+        g_last_error = "sampler init failed";
+        return nullptr;
+    }
+
+    mtmd_helper::gen_audio gen(eng.lctx, eng.mctx.get());
+    mtmd_helper_gen_audio_inp inp{};
+    inp.seq_id      = 0;
+    inp.prompt      = text.c_str();
+    inp.prompt_len  = text.size();
+    inp.speaker_ref = speaker_bitmap.get();
+    inp.lang        = lang.c_str();
+    inp.top_k       = sparams.top_k;
+    inp.top_p       = sparams.top_p;
+    inp.out_type    = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
+
+    if (gen.set_input(&inp) != 0) {
+        g_last_error = "set_input failed";
+        LOGE("%s", g_last_error.c_str());
+        return nullptr;
+    }
+
+    for (;;) {
+        int32_t ret = gen.step_prompt(eng.params.n_batch);
+        if (ret < 0) {
+            g_last_error = "prompt processing failed";
+            LOGE("%s", g_last_error.c_str());
+            return nullptr;
+        }
+        if (ret == 0) break;
+        if (g_cancel) return nullptr;
+    }
+
+    const llama_vocab * vocab = llama_model_get_vocab(eng.model);
+    auto sample_code = [&]() -> llama_token {
+        llama_token t = common_sampler_sample(smpl.get(), eng.lctx, -1);
+        common_sampler_accept(smpl.get(), t, true);
+        return t;
+    };
+
+    const int max_new = maxFrames > 0 ? maxFrames : 512;
+    int n_frames = 0;
+    llama_token sampled = sample_code();
+    const float * h_state = llama_get_embeddings_ith(eng.lctx, -1);
+
+    for (; n_frames < max_new && !llama_vocab_is_eog(vocab, sampled); n_frames++) {
+        if (g_cancel) return nullptr;
+        const float * h_next = nullptr;
+        if (gen.step_gen(sampled, h_state, &h_next) != 0) {
+            g_last_error = "step_gen failed at frame " + std::to_string(n_frames);
+            LOGE("%s", g_last_error.c_str());
+            return nullptr;
+        }
+        h_state = h_next;
+        sampled = sample_code();
+        if (onProgress && (n_frames % 12 == 0)) {
+            env->CallVoidMethod(progressCb, onProgress, n_frames + 1, max_new);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        }
+    }
+
+    int32_t      sample_rate = 0;
+    const char * data        = nullptr;
+    size_t       data_len    = 0;
+    int64_t      n_samples   = 0;
+    if (gen.get_output(&sample_rate, &data, &data_len, &n_samples) != 0 || !data || data_len == 0) {
+        g_last_error = "get_output failed";
+        LOGE("%s", g_last_error.c_str());
+        return nullptr;
+    }
+
+    LOGI("generated %d frames, %zu WAV bytes (%d Hz)", n_frames, data_len, sample_rate);
+    jbyteArray out = env->NewByteArray((jsize) data_len);
+    if (!out) return nullptr;
+    env->SetByteArrayRegion(out, 0, (jsize) data_len, (const jbyte *) data);
+    return out;
+}

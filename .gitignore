@@ -1,0 +1,9 @@
+# Gradle / Android build products (builds run in Docker, nothing here is source)
+**/build/
+**/.gradle/
+output/
+local.properties
+
+# IDE
+.idea/
+*.iml

@@ -1,0 +1,64 @@
+diff --git a/tools/mtmd/clip.cpp b/tools/mtmd/clip.cpp
+index c77e7cc..f9fd996 100644
+--- a/tools/mtmd/clip.cpp
++++ b/tools/mtmd/clip.cpp
+@@ -4092,6 +4092,22 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
+     ggml_cgraph * gf = clip_get_graph_builder(ctx, imgs, params)->build();
+     ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
+ 
++    // zero-fill every graph input before the stage-specific uploads below.
++    // multi-stage generators (e.g. qwen3tts_gen) run the same graph with a
++    // different subset of inputs per stage; inputs the current stage does not
++    // set would otherwise hold stale allocator memory, which is harmless where
++    // the result is unused on CUDA but trips GGML_ASSERT bounds checks in the
++    // CPU/Vulkan get_rows kernels.
++    for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
++        ggml_tensor * node = ggml_graph_node(gf, i);
++        for (int j = 0; j < GGML_MAX_SRC; j++) {
++            ggml_tensor * src = node->src[j];
++            if (src && (src->flags & GGML_TENSOR_FLAG_INPUT)) {
++                ggml_backend_tensor_memset(src, 0, 0, ggml_nbytes(src));
++            }
++        }
++    }
++
+     // set inputs
+     const auto & model   = ctx->model;
+     const auto & hparams = model.hparams;
+diff --git a/tools/mtmd/models/qwen3tts-gen.cpp b/tools/mtmd/models/qwen3tts-gen.cpp
+index b6c95ef..e768a18 100644
+--- a/tools/mtmd/models/qwen3tts-gen.cpp
++++ b/tools/mtmd/models/qwen3tts-gen.cpp
+@@ -248,7 +248,9 @@ ggml_tensor * clip_graph_qwen3tts_gen::code_gen::step(
+     const int     pos      = step_idx + 1; // new cache row and RoPE position
+ 
+     // embed the previous code via this step's codebook table (rows are already scalars)
+-    ggml_tensor * code_in = ggml_view_1d(ctx0, out_code_cache, 1, (size_t) step_idx * out_code_cache->nb[1]);
++    // ggml_cont: the Vulkan backend cannot run get_rows on views whose
++    // buffer offset is not aligned to the device storage-buffer alignment
++    ggml_tensor * code_in = ggml_cont(ctx0, ggml_view_1d(ctx0, out_code_cache, 1, (size_t) step_idx * out_code_cache->nb[1]));
+ 
+     ggml_tensor * embd_w = model.gen_code_embd_w; // [n_embd_talker, vocab, n_acoustic]
+     ggml_tensor * embd_g = ggml_view_2d(ctx0, embd_w, embd_w->ne[0], embd_w->ne[1], embd_w->nb[1],
+@@ -390,7 +392,9 @@ ggml_tensor * clip_graph_qwen3tts_gen::code2wav::quant_decode(ggml_tensor * inp_
+ 
+     // ids for codebook group g over all T frames, [T] I32
+     auto group_ids = [&](int g) {
+-        return ggml_view_1d(ctx0, inp_codes, T, (size_t) g * inp_codes->nb[1]);
++        // ggml_cont: the Vulkan backend cannot run get_rows on views whose
++        // buffer offset is not aligned to the device storage-buffer alignment
++        return ggml_cont(ctx0, ggml_view_1d(ctx0, inp_codes, T, (size_t) g * inp_codes->nb[1]));
+     };
+ 
+     ggml_tensor * sem     = ggml_get_rows(ctx0, c2w.quant_first_cb_w, group_ids(0)); // [256, T]
+@@ -715,7 +719,9 @@ ggml_cgraph * clip_graph_qwen3tts_gen::build() {
+     // output 2: sum of all 16 codebook embeddings, fed back to the talker for the next frame
+     ggml_tensor * out_embd = code0_embd;
+     for (int g = 1; g <= n_acoustic; g++) {
+-        ggml_tensor * code_g = ggml_view_1d(ctx0, out_code_cache, 1, (size_t) g * out_code_cache->nb[1]);
++        // ggml_cont: the Vulkan backend cannot run get_rows on views whose
++        // buffer offset is not aligned to the device storage-buffer alignment
++        ggml_tensor * code_g = ggml_cont(ctx0, ggml_view_1d(ctx0, out_code_cache, 1, (size_t) g * out_code_cache->nb[1]));
+ 
+         ggml_tensor * embd_g = ggml_view_2d(ctx0, model.gen_code_embd_w, model.gen_code_embd_w->ne[0], model.gen_code_embd_w->ne[1],
+                                             model.gen_code_embd_w->nb[1], (size_t) (g - 1) * model.gen_code_embd_w->nb[2]);

@@ -1,0 +1,120 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Every directory under apps/ becomes a matrix entry — adding a new app
+  # requires no workflow changes.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.list.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: echo "apps=$(ls apps | jq -R -s -c 'split("\n") | map(select(. != ""))')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.discover.outputs.apps) }}
+    steps:
+      # Full history + tags: build.sh derives versionCode from the commit
+      # count and versionName from `git describe`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build builder image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          tags: androidbase-builder:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Signing uses the committed keystore/ by default. To use a private
+      # key instead, set the ANDROID_KEYSTORE_B64 and
+      # ANDROID_KEYSTORE_PROPERTIES repo secrets — they override it here.
+      - name: Override keystore from secrets (if configured)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PROPERTIES: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p keystore
+            printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/release.keystore
+            printf '%s\n' "$KEYSTORE_PROPERTIES" > keystore/keystore.properties
+            echo "Using keystore from repository secrets"
+          fi
+
+      - name: Build ${{ matrix.app }}
+        run: |
+          docker image inspect androidbase-builder >/dev/null 2>&1 || echo "::warning::builder image not in docker daemon"
+          set -o pipefail
+          if ! CONTAINER_ENGINE=docker SKIP_IMAGE_BUILD=1 BUILD_TASK="assembleDebug assembleRelease" ./build.sh "${{ matrix.app }}" 2>&1 | tee /tmp/build.log; then
+            # Surface the tail of the log as annotations (visible via API)
+            tail -n 10 /tmp/build.log | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
+
+      - name: Verify APK signatures
+        run: |
+          docker run --rm -v "$PWD/output:/out" androidbase-builder sh -c '
+            set -e
+            for f in /out/*/*.apk; do
+              echo "== $f"
+              /opt/android-sdk/build-tools/34.0.0/apksigner verify --print-certs "$f" | head -4
+            done'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-apk
+          path: output/${{ matrix.app }}/*.apk
+          if-no-files-found: error
+
+  # Publish the signed APKs as a GitHub Release: a rolling "latest"
+  # pre-release for every push to main, a permanent release for v* tags.
+  release:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-apk'
+          path: apks
+          merge-multiple: true
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          ls -l apks
+          version=$(git describe --tags --match 'v*' --always)
+          notes="Signed APKs built from ${GITHUB_SHA} (version ${version#v})."
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$notes" apks/*.apk \
+              || gh release upload "$GITHUB_REF_NAME" apks/*.apk --clobber
+          else
+            # Recreate the rolling pre-release so stale assets never linger
+            gh release delete latest --cleanup-tag --yes || true
+            gh release create latest --prerelease --target "$GITHUB_SHA" \
+              --title "Latest build (${version#v})" --notes "$notes" apks/*.apk
+          fi
