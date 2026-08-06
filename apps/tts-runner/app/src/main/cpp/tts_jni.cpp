@@ -349,12 +349,17 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     inp.top_p       = 1.0f;
     inp.out_type    = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
 
+    LOGI("gen: set_input (text=%zu chars, instruct=%zu, speaker=%s)",
+         text.size(), instruct.size(), speaker.empty() ? "none" : "yes");
+    const int64_t t_si = ggml_time_us();
     if (gen.set_input(&inp) != 0) {
         g_last_error = "set_input failed";
         LOGE("%s", g_last_error.c_str());
         return nullptr;
     }
 
+    LOGI("gen: set_input done in %.1fs; step_prompt loop", (ggml_time_us() - t_si) / 1e6);
+    int prompt_iters = 0;
     for (;;) {
         // framesDone=0 heartbeat: the speaker-ref encode + prompt decode take
         // tens of seconds on phones; without this the UI looks hung
@@ -369,6 +374,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
             return nullptr;
         }
         if (ret == 0) break;
+        if (++prompt_iters % 4 == 0) LOGI("gen: step_prompt iter %d, %d tokens left", prompt_iters, ret);
         if (g_cancel) return nullptr;
     }
 
@@ -389,11 +395,14 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     for (; n_frames < max_new && !llama_vocab_is_eog(vocab, sampled); n_frames++) {
         if (g_cancel) return nullptr;
         const float * h_next = nullptr;
+        const int64_t t_f = ggml_time_us();
+        if (n_frames < 4) LOGI("gen: frame %d step_gen begin (tok=%d)", n_frames, sampled);
         if (gen.step_gen(sampled, h_state, &h_next) != 0) {
             g_last_error = "step_gen failed at frame " + std::to_string(n_frames);
             LOGE("%s", g_last_error.c_str());
             return nullptr;
         }
+        if (n_frames < 4) LOGI("gen: frame %d done in %.2fs", n_frames, (ggml_time_us() - t_f) / 1e6);
         h_state = h_next;
         sampled = sample_code();
         // every frame (~0.5-1 s on phone CPUs); the Kotlin side throttles
