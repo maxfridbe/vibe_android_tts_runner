@@ -8,7 +8,12 @@ set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+# OpenCL stays off: the Adreno OpenCL backend SIGABRTs inside
+# ggml_cl_compute_forward on the TTS codec graph (seen on SD 8 Gen 2 /
+# Adreno 740 — its kernels cover LLM shapes, not this model's codec ops),
+# and because it registers as a type-GPU device it would always win the
+# backend pick over Vulkan. Vulkan (with our get_rows patches) is the GPU path.
+set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -43,12 +48,14 @@ if(EXISTS "/usr/local/share/cmake/SPIRV-Headers")
     set(SPIRV-Headers_DIR "/usr/local/share/cmake/SPIRV-Headers" CACHE PATH "" FORCE)
 endif()
 
-# Adreno-tuned OpenCL kernels, embedded in the .so; loader resolved through
-# our dlopen shim (Android's linker namespace can't see /vendor/lib64).
-set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
-set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
-set(OpenCL_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opencl-headers" CACHE PATH "" FORCE)
-set(OpenCL_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/opencl-stub/libOpenCL.so" CACHE FILEPATH "" FORCE)
+# OpenCL support files (opencl-headers/, opencl-stub/) are kept in the tree
+# for a future retry once upstream's Adreno kernels cover the codec ops.
+if(GGML_OPENCL)
+    set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
+    set(OpenCL_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/opencl-headers" CACHE PATH "" FORCE)
+    set(OpenCL_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/opencl-stub/libOpenCL.so" CACHE FILEPATH "" FORCE)
+endif()
 
 # llama.cpp sources: pre-fetched into the builder image at /opt/llama_cpp
 # (env LLAMA_CPP_SRC), with the Qwen3-TTS CPU/Vulkan fixes already patched in.
@@ -72,7 +79,9 @@ target_include_directories(ttsrunner_jni PRIVATE
     ${LLAMA_SRC}/ggml/include
     ${LLAMA_SRC}/common
     ${LLAMA_SRC}/tools/mtmd)
-target_link_libraries(ttsrunner_jni PRIVATE ${OpenCL_LIBRARY})
+if(GGML_OPENCL)
+    target_link_libraries(ttsrunner_jni PRIVATE ${OpenCL_LIBRARY})
+endif()
 target_link_libraries(ttsrunner_jni PRIVATE llama llama-common mtmd android log)
 target_compile_options(ttsrunner_jni PRIVATE -fexceptions -frtti)
 target_compile_features(ttsrunner_jni PRIVATE cxx_std_17)

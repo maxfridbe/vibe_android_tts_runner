@@ -102,6 +102,9 @@ class TtsService : Service() {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
             } finally {
+                // runs on every survivable exit; only a process death (native
+                // crash, lmkd kill) leaves the crash marker behind
+                java.io.File(filesDir, "job-inflight").delete()
                 working = false
                 wakeLock?.release(); wakeLock = null
                 idleHandler.postDelayed(idleRunnable, IDLE_TIMEOUT_MS)
@@ -113,8 +116,18 @@ class TtsService : Service() {
     /** Non-null end-of-stream marker: LinkedBlockingQueue rejects null. */
     private val EOS = ByteArray(0)
 
-    private fun runJob(text: String, title: String, voiceName: String, backend: String) {
-        DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend")
+    private fun runJob(text: String, title: String, voiceName: String, backendWanted: String) {
+        // crash-loop breaker: if a previous job died without cleaning its
+        // marker (native SIGABRT kills this whole process), retry on CPU
+        val marker = java.io.File(filesDir, "job-inflight")
+        var backend = backendWanted
+        if (marker.exists() && backendWanted != "cpu") {
+            backend = "cpu"
+            DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; falling back to cpu")
+            broadcast("note", 0, 0, "GPU engine crashed last time — using CPU for this run")
+        }
+        marker.writeText(backend)
+        DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
         val model = ModelManager.selectedModel(this)
         if (model == null) {
             fail("No model downloaded — open TTS Runner first"); return

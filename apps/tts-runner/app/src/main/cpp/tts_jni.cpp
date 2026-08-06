@@ -153,9 +153,13 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         size_t free_mem = 0, total_mem = 0;
         ggml_backend_dev_memory(dev, &free_mem, &total_mem);
-        const char * type =
-            ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? "GPU" :
-            ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL ? "ACCEL" : "CPU";
+        const char * type = "CPU";
+        switch (ggml_backend_dev_type(dev)) {
+            case GGML_BACKEND_DEVICE_TYPE_GPU:   type = "GPU";   break;
+            case GGML_BACKEND_DEVICE_TYPE_IGPU:  type = "iGPU";  break;
+            case GGML_BACKEND_DEVICE_TYPE_ACCEL: type = "ACCEL"; break;
+            default: break;
+        }
         out += std::string(type) + " " + ggml_backend_dev_name(dev)
              + " — " + ggml_backend_dev_description(dev)
              + " (" + std::to_string(free_mem / (1024*1024)) + "/"

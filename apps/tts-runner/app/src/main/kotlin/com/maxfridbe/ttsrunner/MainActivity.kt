@@ -46,6 +46,7 @@ class MainActivity : Activity() {
                 "frames" -> "Generating… ${"%.1f".format(chunk / 12.5)} s of audio"
                 "done" -> "Done ($total chunks)"
                 "stopped" -> "Stopped"
+                "note" -> message
                 "error" -> "Error: $message"
                 else -> state ?: ""
             }
