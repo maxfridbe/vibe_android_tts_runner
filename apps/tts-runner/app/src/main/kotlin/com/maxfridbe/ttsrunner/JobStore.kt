@@ -24,6 +24,7 @@ object JobStore {
         var audioSecs: Double = 0.0,
         var genMs: Long = 0,
         var output: String = "",    // "Music/TTS Runner/x.m4a" for save jobs
+        var outputUri: String = "", // MediaStore content uri, used for sharing
         var error: String = "",
     )
 
@@ -70,6 +71,7 @@ object JobStore {
                 audioSecs = o.optDouble("audioSecs", 0.0),
                 genMs = o.optLong("genMs"),
                 output = o.optString("output"),
+                outputUri = o.optString("outputUri"),
                 error = o.optString("error"),
             )
         }
@@ -88,7 +90,8 @@ object JobStore {
                     .put("backend", j.backend).put("save", j.save)
                     .put("status", j.status).put("chunks", j.chunks)
                     .put("audioSecs", j.audioSecs).put("genMs", j.genMs)
-                    .put("output", j.output).put("error", j.error))
+                    .put("output", j.output).put("outputUri", j.outputUri)
+                    .put("error", j.error))
             }
             file(ctx).writeText(arr.toString())
         } catch (e: Exception) {

@@ -154,18 +154,21 @@ class TtsService : Service() {
         if (model == null) {
             fail("No model downloaded — open TTS Runner first"); return
         }
-        // GPU only for Q4_0: the Adreno OpenCL kernels are tuned for that
-        // quant (measured 1.7x talker speedup vs CPU); on Q4_K/Q8 the GPU is
-        // equal-to-10x-slower, and Adreno Vulkan can't compile the shaders at
-        // all. "gpu-force" (adb testing) bypasses the model gate.
+        // Backends: cpu | opencl | vulkan. OpenCL (Adreno) is only worthwhile
+        // with Q4_0 (tuned kernels, 1.7x talker speedup; other quants hit
+        // generic kernels far slower than CPU) — gated on model.gpuCapable.
+        // Vulkan works with any quant but not on Adreno drivers (they fail to
+        // compile the shaders; the load error falls back to CPU cleanly).
+        val wanted = when (backendWanted) { "gpu", "gpu-force" -> "opencl"; else -> backendWanted }
         var backend = when {
-            backendWanted == "gpu-force" -> "gpu"
-            backendWanted == "gpu" && model.gpuCapable -> "gpu"
+            backendWanted == "gpu-force" -> "opencl"
+            wanted == "opencl" && model.gpuCapable -> "opencl"
+            wanted == "vulkan" -> "vulkan"
             else -> "cpu"
         }
-        if (backendWanted == "gpu" && !model.gpuCapable) {
-            DebugLog.log(this, "TtsService", "gpu requested but ${model.id} is not gpu-capable; using cpu")
-            broadcast("note", 0, 0, "GPU needs the Q4_0 model — using CPU")
+        if (wanted == "opencl" && !model.gpuCapable && backendWanted != "gpu-force") {
+            DebugLog.log(this, "TtsService", "opencl requested but ${model.id} is not gpu-capable; using cpu")
+            broadcast("note", 0, 0, "OpenCL GPU needs the Q4_0 model — using CPU")
         }
         if (marker.exists() && backend != "cpu") {
             backend = "cpu"
@@ -283,6 +286,7 @@ class TtsService : Service() {
             "${"%.0f".format(audioSecs)}s audio · ${fmtDuration(genMs)} · RTF ${"%.1f".format(genMs / 1000.0 / audioSecs)}"
         else ""
         var output = ""
+        var outputUri = ""
 
         when {
             stopRequested -> { saver?.abort(); broadcast("stopped", 0, 0, "") }
@@ -295,6 +299,7 @@ class TtsService : Service() {
                     fail("Save failed: ${e.message}"); return
                 }
                 output = path
+                outputUri = saver.uri.toString()
                 DebugLog.log(this, "TtsService", "saved: $path ($stats)")
                 broadcast("saved", chunks.size, chunks.size, "$path — $stats")
                 update(notif(title, "Saved to $path", 0, 0))
@@ -316,6 +321,7 @@ class TtsService : Service() {
                 it.audioSecs = audioSecs
                 it.genMs = genMs
                 it.output = output
+                it.outputUri = outputUri
                 it.error = failed ?: ""
             }
         }

@@ -1,19 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 project(ttsrunner_jni CXX C)
 
-# llama.cpp build knobs: CPU always; OpenCL is the GPU backend.
-# On-device findings (SD 8 Gen 2 / Adreno 740):
-#  - Vulkan: the proprietary Adreno Vulkan driver fails to compile llama.cpp's
-#    compute shaders at all (vk::Device::createComputePipeline: ErrorUnknown
-#    during the first talker decode), so it is compiled out.
-#  - OpenCL: Qualcomm's Adreno kernels handle the talker LLM fine but SIGABRT
-#    inside ggml_cl_compute_forward on the codec ("mmproj") graph — so the JNI
-#    layer keeps the codec on CPU (mmproj_use_gpu=false) and only offloads the
-#    talker layers.
+# llama.cpp build knobs: CPU always; BOTH GPU backends are compiled in and the
+# JNI pins the device explicitly per user choice. On-device findings:
+#  - Adreno (Qualcomm): proprietary Vulkan driver fails to compile llama.cpp's
+#    shaders (createComputePipeline: ErrorUnknown) -> use OpenCL there, whose
+#    Qualcomm kernels are fast for Q4_0 talker layers but SIGABRT on the codec
+#    graph -> codec always stays on CPU (mmproj_use_gpu=false).
+#  - Xclipse/Mali (Exynos etc.): no vendor OpenCL; Vulkan is the GPU path.
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN ON CACHE BOOL "" FORCE)
 set(GGML_OPENCL ON CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)

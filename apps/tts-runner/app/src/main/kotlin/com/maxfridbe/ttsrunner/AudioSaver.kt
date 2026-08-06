@@ -17,7 +17,7 @@ import android.provider.MediaStore
 class AudioSaver(private val context: Context, title: String) {
     private val fileName =
         title.replace(Regex("[^\\w .-]"), " ").trim().ifBlank { "tts" }.take(60) + ".m4a"
-    private val uri: Uri
+    val uri: Uri
     private val pfd: ParcelFileDescriptor
     private val encoder: AacM4aWriter
 

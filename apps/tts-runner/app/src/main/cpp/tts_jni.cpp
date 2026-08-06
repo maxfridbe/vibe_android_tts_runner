@@ -81,9 +81,31 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     params.cpuparams.n_threads = nThreads > 0 ? nThreads : 4;
     params.warmup      = false;
 
-    const std::string backend = jstr(env, jbackend);
-    params.n_gpu_layers   = backend == "cpu" ? 0 : 999;
+    const std::string backend = jstr(env, jbackend);   // "cpu" | "opencl" | "vulkan"
     params.mmproj_use_gpu = false;  // codec on CPU always, see nLoad comment
+    if (backend == "cpu") {
+        params.n_gpu_layers = 0;
+    } else {
+        params.n_gpu_layers = 999;
+        // both Vulkan and OpenCL are compiled in; pin the requested one
+        // explicitly instead of trusting default device selection
+        ggml_backend_load_all();
+        const char * want = backend == "vulkan" ? "Vulkan" : "OpenCL";
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            const std::string name = ggml_backend_dev_name(dev);
+            if (name.find(want) != std::string::npos) {
+                params.devices.push_back(dev);
+                LOGI("pinned device: %s (%s)", name.c_str(), ggml_backend_dev_description(dev));
+                break;
+            }
+        }
+        if (params.devices.empty()) {
+            g_last_error = "no " + backend + " device available on this phone";
+            LOGE("%s", g_last_error.c_str());
+            return JNI_FALSE;
+        }
+    }
 
     common_init();
     llama_backend_init();

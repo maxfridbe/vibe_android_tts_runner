@@ -293,6 +293,17 @@ class MainActivity : AppCompatActivity() {
                 onSeek = { frac -> player?.let { it.seekTo((it.duration * frac).toInt()) } }
             }
             playerRow.addView(waveform, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+            playerRow.addView(Button(context).apply {
+                text = "Share"
+                setOnClickListener {
+                    val f = lastAudio()
+                    if (!f.exists() || f.length() <= 44) { toast("No audio yet"); return@setOnClickListener }
+                    thread {
+                        runCatching { AudioShare.shareWavAsM4a(this@MainActivity, f, "TTS audio") }
+                            .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
+                    }
+                }
+            })
             addView(playerRow)
         })
         return scroll
@@ -408,6 +419,14 @@ class MainActivity : AppCompatActivity() {
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name).exists()
                 addView(buttonRow(
                     (if (hasPreview) "▶ Preview" else "Make preview") to { previewVoice(v) },
+                    "Share" to {
+                        val p = VoiceStore.previewFile(this@MainActivity, v.name)
+                        if (!p.exists()) toast("Make a preview first")
+                        else thread {
+                            runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice preview ${v.name}") }
+                                .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
+                        }
+                    },
                     "Delete" to {
                         MaterialAlertDialogBuilder(this@MainActivity)
                             .setMessage("Delete voice “${v.name}”?")
@@ -509,6 +528,11 @@ class MainActivity : AppCompatActivity() {
                 })
                 addView(buttonRow(
                     "Re-run" to { rerunJob(j, j.voice) },
+                    "Share" to {
+                        if (j.outputUri.isNotBlank())
+                            AudioShare.shareUri(this@MainActivity, Uri.parse(j.outputUri), j.title)
+                        else toast("No saved file for this job (use Save mode, or Share from the Listen player)")
+                    },
                     "Other voice…" to {
                         val names = VoiceStore.list(this@MainActivity).map { it.name }.toTypedArray()
                         if (names.isEmpty()) toast("No voices")
@@ -566,18 +590,43 @@ class MainActivity : AppCompatActivity() {
         col.addView(card {
             addView(TextView(context).apply { text = "Engine"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
             val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
-            val backendGroup = android.widget.RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
-            backendGroup.addView(RadioButton(context).apply { text = "CPU"; id = 100 })
-            backendGroup.addView(RadioButton(context).apply { text = "GPU"; id = 101 })
+            val backendGroup = android.widget.RadioGroup(context)
+            val cpuBtn = RadioButton(context).apply { text = "CPU"; id = 100 }
+            val clBtn = RadioButton(context).apply { text = "GPU · OpenCL (Adreno, Q4_0 model only)"; id = 101 }
+            val vkBtn = RadioButton(context).apply { text = "GPU · Vulkan (any model)"; id = 102 }
+            backendGroup.addView(cpuBtn); backendGroup.addView(clBtn); backendGroup.addView(vkBtn)
             addView(backendGroup)
-            addView(TextView(context).apply {
-                textSize = 12f; alpha = 0.7f
-                text = "GPU needs the Q4_0 model (Adreno-tuned kernels, ~1.7x faster speech). Other models always use CPU."
-            })
-            backendGroup.check(if (prefs.getString("backend", "cpu") == "gpu") 101 else 100)
+            val detectNote = TextView(context).apply { textSize = 12f; alpha = 0.7f; text = "Detecting GPU…" }
+            addView(detectNote)
+            val stored = when (val b = prefs.getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
+            backendGroup.check(when (stored) { "opencl" -> 101; "vulkan" -> 102; else -> 100 })
             backendGroup.setOnCheckedChangeListener { _, id ->
-                prefs.edit().putString("backend", if (id == 101) "gpu" else "cpu").apply()
+                prefs.edit().putString("backend",
+                    when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }).apply()
                 refreshVoiceLabel()
+            }
+            // recommend the backend that fits this phone's GPU: Adreno ->
+            // OpenCL (its Vulkan driver can't compile the shaders); any other
+            // Vulkan GPU (Xclipse/Mali/RDNA) -> Vulkan; no GPU -> CPU
+            thread {
+                val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")
+                val hasAdrenoCl = info.contains("OpenCL") && info.contains("Adreno")
+                val vulkanLine = info.lines().find { it.contains("Vulkan") } ?: ""
+                val rec = when {
+                    hasAdrenoCl -> "opencl"
+                    vulkanLine.isNotEmpty() && !vulkanLine.contains("Adreno") -> "vulkan"
+                    else -> "cpu"
+                }
+                val gpuName = Regex("— ([^(]+)\\(").find(vulkanLine)?.groupValues?.get(1)?.trim()
+                    ?: if (hasAdrenoCl) "Adreno" else "none"
+                runOnUiThread {
+                    when (rec) {
+                        "opencl" -> clBtn.text = "${clBtn.text}  ★ recommended"
+                        "vulkan" -> vkBtn.text = "${vkBtn.text}  ★ recommended"
+                        else -> cpuBtn.text = "${cpuBtn.text}  ★ recommended"
+                    }
+                    detectNote.text = "Detected GPU: $gpuName. A GPU engine that fails to start falls back to CPU automatically."
+                }
             }
             val pm = getSystemService(android.os.PowerManager::class.java)
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
