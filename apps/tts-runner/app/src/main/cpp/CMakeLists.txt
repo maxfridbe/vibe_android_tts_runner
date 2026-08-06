@@ -47,7 +47,7 @@ set(LLAMA_SRC "$ENV{LLAMA_CPP_SRC}")
 if(NOT EXISTS "${LLAMA_SRC}/CMakeLists.txt")
     include(FetchContent)
     FetchContent_Declare(llama_cpp
-        URL https://github.com/ggml-org/llama.cpp/archive/f9e832c81d05d9a1a5d5e94ba9c46cd0a05df522.tar.gz
+        URL https://github.com/ggml-org/llama.cpp/archive/f9e832c10e9444cb168ddcb579cc62c154f3068b.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP ON)
     FetchContent_MakeAvailable(llama_cpp)
     set(LLAMA_SRC ${llama_cpp_SOURCE_DIR})

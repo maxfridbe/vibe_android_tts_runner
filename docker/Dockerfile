@@ -13,7 +13,7 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV PATH=/usr/local/bin:$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools
 
 RUN apt-get update && \
-    apt-get install -y wget unzip git ninja-build patch --no-install-recommends && \
+    apt-get install -y wget unzip git ninja-build patch xz-utils --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
 # https://developer.android.com/studio#command-tools
@@ -39,7 +39,7 @@ RUN sdkmanager \
 # llama.cpp sources, pinned. Qwen3-TTS support landed 2026-08-04 (PR #26254);
 # this pin is the same commit validated against the desktop CUDA build on
 # brainiac. Bump LLAMA_CPP_COMMIT to pick up upstream Vulkan/CPU fixes.
-ARG LLAMA_CPP_COMMIT="f9e832c81d05d9a1a5d5e94ba9c46cd0a05df522"
+ARG LLAMA_CPP_COMMIT="f9e832c10e9444cb168ddcb579cc62c154f3068b"
 RUN wget -q "https://github.com/ggml-org/llama.cpp/archive/${LLAMA_CPP_COMMIT}.tar.gz" -O /tmp/llama.tar.gz && \
     mkdir -p /opt/llama_cpp && \
     tar xzf /tmp/llama.tar.gz -C /opt/llama_cpp --strip-components=1 && \
