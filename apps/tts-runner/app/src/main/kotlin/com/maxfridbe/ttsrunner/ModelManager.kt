@@ -12,6 +12,12 @@ import java.net.URL
  *  into the models dir are picked up too. */
 object ModelManager {
 
+    /** Release holding GGUFs that upstream does not publish (converted with
+     *  this repo's llama.cpp patch). */
+    private const val MODEL_RELEASE =
+        "https://github.com/maxfridbe/vibe_android_tts_runner/releases/download/models-v1"
+
+
     data class CatalogModel(
         val id: String,
         val label: String,
@@ -61,13 +67,14 @@ object ModelManager {
             quantizeType = "Q4_0",
             gpuCapable = true,   // Adreno OpenCL kernels are tuned for Q4_0
         ),
+        // Upstream ships no GGUF of the VoiceDesign variant, so this repo
+        // hosts the conversion as release assets (see tooling/publish_models.sh).
         CatalogModel(
             id = "1.7b-vd",
-            label = "Qwen3-TTS 1.7B VoiceDesign (voice designer only — not hosted, push manually)",
-            talkerUrl = "",   // no public GGUF of this variant yet: convert it
-            // yourself (see README) and push the files into the models dir
+            label = "Qwen3-TTS 1.7B VoiceDesign (1.4 GB — enables describe-a-voice)",
+            talkerUrl = "$MODEL_RELEASE/Qwen3-TTS-VD-Q4_K_M.gguf",
             talkerFile = "Qwen3-TTS-VD-Q4_K_M.gguf",
-            mmprojUrl = "",
+            mmprojUrl = "$MODEL_RELEASE/mmproj-Qwen3-TTS-VD-Q8_0.gguf",
             mmprojFile = "mmproj-Qwen3-TTS-VD-Q8_0.gguf",
             totalBytes = 1_035_965_568L + 422_392_192L,
             designOnly = true,

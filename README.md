@@ -74,20 +74,22 @@ citations are stripped before speaking.
 |---|---|
 | 1.7B Q4_K_M (recommended), Q8_0 | downloaded in-app from [ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
 | 1.7B Q4_0 (needed for the Adreno OpenCL kernels) | requantized on-device from the Q8 download — nobody hosts this quant |
-| 1.7B VoiceDesign (description-based voice design) | no public GGUF; convert it yourself, see below |
+| 1.7B VoiceDesign (description-based voice design) | downloaded in-app from this repo's [`models-v1` release](https://github.com/maxfridbe/vibe_android_tts_runner/releases/tag/models-v1) — upstream publishes no GGUF of this variant |
 
-VoiceDesign is optional — without it the designer still rolls random voices.
-To build it, run llama.cpp's converter (this repo's patch is required, it
-teaches the converter and mtmd about a codec-only mmproj) against the
+Everything is downloadable in-app, so a fresh install needs nothing but the
+APK and network.
+
+To rebuild the VoiceDesign GGUFs yourself, run llama.cpp's converter — this
+repo's patch is required, it teaches the converter and mtmd about a codec-only
+mmproj — against the
 [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign)
-checkpoint:
+checkpoint, then publish them:
 
 ```sh
 python convert_hf_to_gguf.py <checkpoint> --outfile Qwen3-TTS-VD-f16.gguf --outtype f16
 python convert_hf_to_gguf.py <checkpoint> --mmproj --outfile mmproj-Qwen3-TTS-VD-Q8_0.gguf --outtype q8_0
 llama-quantize Qwen3-TTS-VD-f16.gguf Qwen3-TTS-VD-Q4_K_M.gguf Q4_K_M
-adb push Qwen3-TTS-VD-Q4_K_M.gguf mmproj-Qwen3-TTS-VD-Q8_0.gguf \
-    /sdcard/Android/data/com.maxfridbe.ttsrunner/files/models/
+GH_TOKEN=... tooling/publish_models.sh Qwen3-TTS-VD-Q4_K_M.gguf mmproj-Qwen3-TTS-VD-Q8_0.gguf
 ```
 
 ## Architecture
