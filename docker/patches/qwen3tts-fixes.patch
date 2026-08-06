@@ -115,8 +115,9 @@ diff -ruN a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
              throw std::runtime_error(string_format(
                  "mismatch between text model (n_embd = %d) and mmproj (n_embd = %d)\n"
 diff -ruN a/tools/mtmd/mtmd-helper-gen.cpp b/tools/mtmd/mtmd-helper-gen.cpp
---- a/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 21:46:27.479655578 +0000
-+++ b/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 21:46:27.487938630 +0000
+diff -ruN a/tools/mtmd/mtmd-helper-gen.cpp b/tools/mtmd/mtmd-helper-gen.cpp
+--- a/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 23:03:28.752481180 +0000
++++ b/tools/mtmd/mtmd-helper-gen.cpp	2026-08-06 23:03:28.752640381 +0000
 @@ -171,7 +171,25 @@
          }
          ids.resize((size_t) n_ids);
@@ -143,7 +144,22 @@ diff -ruN a/tools/mtmd/mtmd-helper-gen.cpp b/tools/mtmd/mtmd-helper-gen.cpp
          for (int i = 0; i < 3; i++) prompt.push_back(row(ids[(size_t) i]));
          prompt.push_back(sum_row(tts_pad, c_think));
          prompt.push_back(sum_row(tts_pad, c_think_b));
-diff -ruN a/tools/mtmd/mtmd-helper.h b/tools/mtmd/mtmd-helper.h
+@@ -205,10 +223,11 @@
+         top_p = inp->top_p > 0 ? inp->top_p : 1.0f;
+         out_type = inp->out_type;
+ 
+-        // the text stream keeps flowing during generation: after frame k, the input adds
+-        // trailing text row k on top of the codes embedding, then tts_eos, then tts_pad
+-        for (int i = 3; i < n_ids - 5; i++) overlay.push_back(row(ids[(size_t) i]));
+-        overlay.push_back(row(tts_eos));
++        // official reference behaviour (non-streaming mode): every generation
++        // step adds ONLY the tts_pad embedding on top of the codec embedding.
++        // Re-overlaying the text rows here feeds the utterance to the model a
++        // second time mid-generation, which makes it read the text twice
++        // (~2.3x audio duration, confirmed by whisper transcripts).
+         overlay.push_back(row(tts_pad));
+ 
+         return 0;
 --- a/tools/mtmd/mtmd-helper.h	2026-08-06 21:46:27.479253065 +0000
 +++ b/tools/mtmd/mtmd-helper.h	2026-08-06 21:46:27.487724544 +0000
 @@ -182,6 +182,9 @@

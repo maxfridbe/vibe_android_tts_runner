@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var content: FrameLayout
     private lateinit var memMeter: TextView
+    private lateinit var statusPane: View
     private val tabs = mutableMapOf<Int, View>()
     private var currentTab = TAB_NEWJOB
 
@@ -48,6 +49,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var runProgress: ProgressBar
     private lateinit var etaText: TextView
     private lateinit var jobText: EditText
+    private lateinit var stopBtn: Button
     private lateinit var voicePickBtn: Button
     private var pickedVoice: String? = null
     private var pickedSave = false
@@ -74,6 +76,8 @@ class MainActivity : AppCompatActivity() {
             val permille = intent.getIntExtra("permille", -1)
             val eta = intent.getIntExtra("eta", -1)
             if (permille >= 0) runProgress.progress = permille
+            val busy = state in setOf("loading", "generating", "frames")
+            stopBtn.visibility = if (busy) View.VISIBLE else View.GONE
             etaText.text = if (eta >= 0) "≈ ${if (eta >= 60) "${eta / 60}m ${eta % 60}s" else "${eta}s"} remaining" else ""
             runStatus.text = when (state) {
                 "loading" -> { runProgress.progress = 0; "Loading model…" }
@@ -120,11 +124,19 @@ class MainActivity : AppCompatActivity() {
             textSize = 11f; alpha = 0.6f
             setPadding(dp(8), dp(6), dp(12), dp(4))
         }
-        val contentWithMeter = FrameLayout(this).apply {
-            addView(content)
-            addView(memMeter, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.END))
+        // persistent status pane: what the engine is doing right now, visible
+        // from every tab (a job started from the share sheet or a re-run is
+        // just as interesting as one started on the New job tab)
+        statusPane = buildStatusPane()
+        val contentWithMeter = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(FrameLayout(context).apply {
+                addView(statusPane)
+                addView(memMeter, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.END))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
 
         val wide = resources.configuration.screenWidthDp >= 600
@@ -324,24 +336,38 @@ class MainActivity : AppCompatActivity() {
                         save = pickedSave, voiceName = pickedVoice)
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            actions.addView(Button(context).apply {
-                text = "Stop"
-                setOnClickListener {
-                    startService(Intent(this@MainActivity, TtsService::class.java).setAction(TtsService.ACTION_STOP))
-                }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
             addView(actions)
         })
 
-        col.addView(card {
-            runStatus = TextView(context).apply { text = "Idle" }
-            addView(runStatus)
-            runProgress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
-            addView(runProgress)
-            etaText = TextView(context).apply { textSize = 13f; alpha = 0.7f }
-            addView(etaText)
-        })
         return scroll
+    }
+
+    /** Current Status pane, pinned above the tabs. */
+    private fun buildStatusPane(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), dp(8))
+        }
+        row.addView(TextView(this).apply {
+            text = "Current status"; textSize = 11f; alpha = 0.6f
+        })
+        val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        runStatus = TextView(this).apply { text = "Idle"; textSize = 15f }
+        line.addView(runStatus, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        etaText = TextView(this).apply { textSize = 12f; alpha = 0.7f }
+        line.addView(etaText)
+        stopBtn = Button(this).apply {
+            text = "Stop"
+            visibility = View.GONE
+            setOnClickListener {
+                startService(Intent(this@MainActivity, TtsService::class.java).setAction(TtsService.ACTION_STOP))
+            }
+        }
+        line.addView(stopBtn)
+        row.addView(line)
+        runProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        row.addView(runProgress)
+        return row
     }
 
     private fun refreshVoiceLabel() {
