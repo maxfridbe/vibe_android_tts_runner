@@ -2,10 +2,12 @@ package com.maxfridbe.ttsrunner
 
 /** Natural-break text chunking, same strategy as the audiobook maker's
  *  splitter: prefer paragraph boundaries, then sentence boundaries, then a
- *  hard slice. ~16 chars ≈ 1 s of speech, so 400 chars ≈ 25 s per chunk —
- *  short enough that the first audio starts quickly. */
+ *  hard slice. ~13 chars ≈ 1 s of speech; 200 chars ≈ 15 s per chunk. Small
+ *  chunks matter on phones: first audio sooner, visible progress, and a
+ *  runaway generation burns minutes not tens of minutes (a single 396-char
+ *  chunk once ran 24 min on a throttled screen-off phone). */
 object Chunker {
-    const val DEFAULT_CHUNK_CHARS = 400
+    const val DEFAULT_CHUNK_CHARS = 200
 
     private val SENTENCE_END = Regex("(?<=[.!?…])\\s+")
 

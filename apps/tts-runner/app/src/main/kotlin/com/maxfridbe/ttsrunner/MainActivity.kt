@@ -117,15 +117,24 @@ class MainActivity : Activity() {
         }
 
         header("2 · Engine")
-        val backendGroup = RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val cpuBtn = RadioButton(this).apply { text = "CPU"; id = 100 }
-        val gpuBtn = RadioButton(this).apply { text = "GPU (experimental)"; id = 101 }
-        backendGroup.addView(cpuBtn); backendGroup.addView(gpuBtn)
-        root.addView(backendGroup)
         val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
-        backendGroup.check(if (prefs.getString("backend", "cpu") == "gpu") 101 else 100)
-        backendGroup.setOnCheckedChangeListener { _, id ->
-            prefs.edit().putString("backend", if (id == 101) "gpu" else "cpu").apply()
+        prefs.edit().putString("backend", "cpu").apply()  // clear any stale gpu pref
+        root.addView(TextView(this).apply {
+            text = "CPU (${Runtime.getRuntime().availableProcessors()} cores). GPU is disabled: " +
+                "the Adreno Vulkan driver can't compile the model's shaders and Adreno OpenCL " +
+                "is slower than CPU for this model."
+        })
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            root.addView(Button(this).apply {
+                text = "Allow background generation (battery)"
+                setOnClickListener {
+                    // Samsung throttles screen-off background CPU hard without
+                    // this; a 30 s generation once took 24 minutes
+                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")))
+                }
+            })
         }
 
         header("3 · Voices")

@@ -90,7 +90,7 @@ object DebugLog {
         try {
             am.getHistoricalProcessExitReasons(ctx.packageName, 0, 6).forEach { e ->
                 sb.appendLine("${fmt.format(Date(e.timestamp))} ${e.processName.substringAfterLast(':', "ui")} " +
-                    "reason=${e.reason} (${exitReasonName(e.reason)}) rss=${e.rss / 256} MB status=${e.status}")
+                    "reason=${e.reason} (${exitReasonName(e.reason)}) rss=${e.rss / 1024} MB status=${e.status}")
             }
         } catch (e: Exception) {
             sb.appendLine("exit-info unavailable: $e")

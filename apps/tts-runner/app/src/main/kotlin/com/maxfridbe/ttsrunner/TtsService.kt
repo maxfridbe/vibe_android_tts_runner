@@ -148,7 +148,13 @@ class TtsService : Service() {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
-        var backend = backendWanted
+        // GPU retired on this hardware: Adreno Vulkan can't compile the
+        // shaders, and Adreno OpenCL is no faster on Q8 and ~10x slower on
+        // Q4_K quants (a 35-char sentence sat for 5+ minutes). CPU always.
+        var backend = "cpu"
+        if (backendWanted != "cpu") {
+            DebugLog.log(this, "TtsService", "backend '$backendWanted' requested; forcing cpu (GPU retired, see code comment)")
+        }
         if (marker.exists() && backendWanted != "cpu") {
             backend = "cpu"
             DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; falling back to cpu")
@@ -314,8 +320,11 @@ class TtsService : Service() {
      *  duration for the text), or instant-EOS outputs and re-roll the seed up
      *  to 2 times. Returns raw PCM (s16 mono 24 kHz) or null. */
     private fun generatePlausible(chunk: String, voicePath: String, onFrames: (Int, Int) -> Unit): ByteArray? {
-        val expectSecs = chunk.length / 16.0
-        val maxFrames = ((expectSecs * 12.5 * 2.2).toInt() + 64).coerceIn(128, 2048)
+        // measured post-double-read-fix: ~13 chars/s of speech; cap at 1.8x
+        // expected so a runaway generation is bounded tightly (frame cost is
+        // ~0.4-2 s on a throttled phone)
+        val expectSecs = chunk.length / 13.0
+        val maxFrames = ((expectSecs * 12.5 * 1.8).toInt() + 32).coerceIn(96, 2048)
         var best: ByteArray? = null   // shortest non-degenerate take so far
         for (attempt in 0 until 3) {
             if (stopRequested) return null
