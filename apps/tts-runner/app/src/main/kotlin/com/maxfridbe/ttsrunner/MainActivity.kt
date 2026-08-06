@@ -155,6 +155,41 @@ class MainActivity : Activity() {
         runStatus = TextView(this)
         root.addView(runStatus)
 
+        header("5 · Debug")
+        val statusText = TextView(this).apply { textSize = 12f; setTypeface(android.graphics.Typeface.MONOSPACE) }
+        root.addView(statusText)
+        val debugButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        debugButtons.addView(Button(this).apply {
+            text = "Refresh status"
+            setOnClickListener {
+                thread {
+                    val s = buildString {
+                        val am = getSystemService(android.app.ActivityManager::class.java)
+                        val mi = android.app.ActivityManager.MemoryInfo()
+                        am.getMemoryInfo(mi)
+                        appendLine("${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, android ${android.os.Build.VERSION.RELEASE}")
+                        appendLine("RAM ${mi.availMem / 1048576}/${mi.totalMem / 1048576} MB free, low=${mi.lowMemory}")
+                        append(runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "device query failed: $it" })
+                    }
+                    runOnUiThread { statusText.text = s }
+                }
+            }
+        })
+        debugButtons.addView(Button(this).apply {
+            text = "Copy debug log"
+            setOnClickListener {
+                thread {
+                    val report = DebugLog.buildReport(this@MainActivity)
+                    runOnUiThread {
+                        val cm = getSystemService(android.content.ClipboardManager::class.java)
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("ttsrunner-debug", report))
+                        toast("Debug report copied (${report.length / 1024} KB)")
+                    }
+                }
+            }
+        })
+        root.addView(debugButtons)
+
         setContentView(ScrollView(this).apply { addView(root) })
         refreshModelUi()
         refreshVoices()

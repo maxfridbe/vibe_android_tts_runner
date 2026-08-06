@@ -28,8 +28,10 @@ if(ANDROID)
     set(GGML_MMAP OFF CACHE BOOL "" FORCE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -march=armv8.6-a+dotprod+i8mm")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.6-a+dotprod+i8mm")
+        # armv8.2+dotprod runs on ~2019+ SoCs (SD 855 and later); i8mm/armv8.6
+        # would be faster but SIGILLs on anything older than ~2022
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -march=armv8.2-a+dotprod+fp16")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+dotprod+fp16")
     endif()
 endif()
 

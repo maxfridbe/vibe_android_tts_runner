@@ -73,6 +73,7 @@ class ShareActivity : Activity() {
             val result = try {
                 TextCleaner.clean(shared)
             } catch (e: Exception) {
+                DebugLog.log(this, "ShareActivity", "clean failed for ${shared.take(120)}", e)
                 null
             }
             runOnUiThread {

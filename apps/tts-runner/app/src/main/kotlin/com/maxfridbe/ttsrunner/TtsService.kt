@@ -98,6 +98,9 @@ class TtsService : Service() {
         workThread = thread(name = "tts-generate") {
             try {
                 runJob(text, title, voiceName, backend)
+            } catch (t: Throwable) {
+                DebugLog.log(this, "TtsService", "runJob crashed", t)
+                fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
             } finally {
                 working = false
                 wakeLock?.release(); wakeLock = null
@@ -107,7 +110,11 @@ class TtsService : Service() {
         }
     }
 
+    /** Non-null end-of-stream marker: LinkedBlockingQueue rejects null. */
+    private val EOS = ByteArray(0)
+
     private fun runJob(text: String, title: String, voiceName: String, backend: String) {
+        DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend")
         val model = ModelManager.selectedModel(this)
         if (model == null) {
             fail("No model downloaded — open TTS Runner first"); return
@@ -116,15 +123,17 @@ class TtsService : Service() {
         if (voice == null) {
             fail("No voice imported — add one in TTS Runner"); return
         }
+        DebugLog.log(this, "TtsService", "model=${model.id} voice=${voice.file.name} (${voice.file.length()} b)")
 
         if (!ensureLoaded(model, backend)) {
             fail("Model load failed: ${TtsEngine.nLastError()}"); return
         }
 
         val chunks = Chunker.split(text)
+        DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
         if (chunks.isEmpty()) { fail("Nothing to speak"); return }
 
-        val queue = LinkedBlockingQueue<ByteArray?>(2)
+        val queue = LinkedBlockingQueue<ByteArray>(2)
         val player = thread(name = "tts-play") { playLoop(queue) }
 
         var failed: String? = null
@@ -132,15 +141,20 @@ class TtsService : Service() {
             if (stopRequested) break
             update(notif(title, "Chunk ${i + 1}/${chunks.size}", i, chunks.size))
             broadcast("generating", i, chunks.size, chunk.take(80))
+            val t0 = System.currentTimeMillis()
             val pcm = generatePlausible(chunk, voice.file.absolutePath)
             if (pcm == null) {
                 if (!stopRequested) failed = TtsEngine.nLastError().ifBlank { "generation failed" }
+                DebugLog.log(this, "TtsService", "chunk ${i + 1} FAILED after ${System.currentTimeMillis() - t0} ms: $failed")
                 break
             }
+            DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
+                "${"%.1f".format(pcm.size / 2.0 / SAMPLE_RATE)}s audio in ${System.currentTimeMillis() - t0} ms")
             queue.put(pcm)
         }
-        queue.put(null) // end-of-stream
+        queue.put(EOS)
         player.join()
+        DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
 
         when {
             stopRequested -> broadcast("stopped", 0, 0, "")
@@ -164,13 +178,21 @@ class TtsService : Service() {
                     override fun onProgress(framesDone: Int, framesMax: Int) {
                         broadcastThrottled("frames", framesDone, framesMax)
                     }
-                }) ?: return null
-            val pcm = wavToPcm(wav) ?: return null
+                })
+            if (wav == null) {
+                DebugLog.log(this, "TtsService", "nGenerate null (attempt $attempt): ${TtsEngine.nLastError()}")
+                return null
+            }
+            val pcm = wavToPcm(wav)
+            if (pcm == null) {
+                DebugLog.log(this, "TtsService", "wavToPcm failed on ${wav.size} bytes (attempt $attempt)")
+                return null
+            }
             val secs = pcm.size / 2.0 / SAMPLE_RATE
             val tooShort = secs < minOf(3.0, chunk.length / 40.0)
             val runaway = secs >= 0.95 * (maxFrames / 12.5)
             if (!tooShort && !runaway) return pcm
-            android.util.Log.w("TtsService", "implausible chunk (${"%.1f".format(secs)}s for ${chunk.length} chars), re-rolling")
+            DebugLog.log(this, "TtsService", "implausible chunk (${"%.1f".format(secs)}s for ${chunk.length} chars, seed $seed), re-rolling")
         }
         // all re-rolls implausible: use the last attempt rather than failing hard
         val wav = TtsEngine.nGenerate(chunk, voicePath, "en", maxFrames, 42, 0.8f, 0.95f, null) ?: return null
@@ -183,14 +205,18 @@ class TtsService : Service() {
         if (loadedKey == key) return true
         TtsEngine.nUnload()
         broadcast("loading", 0, 0, model.label)
+        DebugLog.log(this, "TtsService", "devices:\n${runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "$it" }}")
         val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 6)
+        val t0 = System.currentTimeMillis()
         val ok = TtsEngine.nLoad(
             ModelManager.talkerPath(this, model), ModelManager.mmprojPath(this, model), backend, threads)
+        DebugLog.log(this, "TtsService", "nLoad(${model.id}, $backend, $threads threads) -> $ok " +
+            "in ${System.currentTimeMillis() - t0} ms" + if (!ok) " err=${TtsEngine.nLastError()}" else "")
         loadedKey = if (ok) key else null
         return ok
     }
 
-    private fun playLoop(queue: LinkedBlockingQueue<ByteArray?>) {
+    private fun playLoop(queue: LinkedBlockingQueue<ByteArray>) {
         val minBuf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val track = AudioTrack.Builder()
@@ -206,21 +232,31 @@ class TtsService : Service() {
             .setBufferSizeInBytes(maxOf(minBuf, SAMPLE_RATE)) // >= 0.5 s
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        DebugLog.log(this, "TtsService", "AudioTrack created: state=${track.state} session=${track.audioSessionId} minBuf=$minBuf")
         track.play()
         try {
+            var played = 0L
             while (true) {
-                val pcm = queue.take() ?: break
+                val pcm = queue.take()
+                if (pcm.isEmpty()) break // EOS
                 var off = 0
                 while (off < pcm.size && !stopRequested) {
                     val n = track.write(pcm, off, minOf(32768, pcm.size - off))
-                    if (n <= 0) break
+                    if (n <= 0) {
+                        DebugLog.log(this, "TtsService", "AudioTrack.write returned $n (playState=${track.playState})")
+                        break
+                    }
                     off += n
                 }
+                played += off
                 if (stopRequested) break
             }
             if (!stopRequested) {
                 track.stop() // drains remaining buffered audio
             }
+            DebugLog.log(this, "TtsService", "playback done: ${played / 2 / SAMPLE_RATE}s written, underruns=${track.underrunCount}")
+        } catch (t: Throwable) {
+            DebugLog.log(this, "TtsService", "playLoop crashed", t)
         } finally {
             if (stopRequested) { try { track.pause(); track.flush() } catch (_: Exception) {} }
             track.release()

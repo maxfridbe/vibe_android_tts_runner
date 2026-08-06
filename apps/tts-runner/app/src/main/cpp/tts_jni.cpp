@@ -8,6 +8,7 @@
 #include "common.h"
 #include "sampling.h"
 #include "llama.h"
+#include "ggml-backend.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
@@ -90,6 +91,11 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     llama_backend_init();
     llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
 
+    const int64_t t_load_start = ggml_time_us();
+    LOGI("nLoad: model=%s mmproj=%s backend=%s threads=%d ngl=%d",
+         params.model.path.c_str(), params.mmproj.path.c_str(),
+         backend.c_str(), params.cpuparams.n_threads, params.n_gpu_layers);
+
     eng->init = common_init_from_params(params);
     if (!eng->init || !eng->init->model() || !eng->init->context()) {
         g_last_error = "failed to load model " + params.model.path;
@@ -116,7 +122,8 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
 
     eng->backend_used = backend;
     g_engine = std::move(eng);
-    LOGI("engine loaded (backend=%s threads=%d)", backend.c_str(), params.cpuparams.n_threads);
+    LOGI("engine loaded in %.1fs (backend=%s threads=%d)",
+         (ggml_time_us() - t_load_start) / 1e6, backend.c_str(), params.cpuparams.n_threads);
     return JNI_TRUE;
 }
 
@@ -133,6 +140,29 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nLastError(JNIEnv * env, jclass) {
     return env->NewStringUTF(g_last_error.c_str());
+}
+
+// One line per compute device ggml can see (CPU + any usable GPU backends),
+// with free/total memory — for the in-app status panel and debug log.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
+    ggml_backend_load_all();
+    std::string out;
+    const size_t n = ggml_backend_dev_count();
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        size_t free_mem = 0, total_mem = 0;
+        ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+        const char * type =
+            ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU ? "GPU" :
+            ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL ? "ACCEL" : "CPU";
+        out += std::string(type) + " " + ggml_backend_dev_name(dev)
+             + " — " + ggml_backend_dev_description(dev)
+             + " (" + std::to_string(free_mem / (1024*1024)) + "/"
+             + std::to_string(total_mem / (1024*1024)) + " MB free/total)\n";
+    }
+    if (out.empty()) out = "no ggml devices found\n";
+    return env->NewStringUTF(out.c_str());
 }
 
 // Returns a complete WAV file as bytes, or null on failure/cancel.
@@ -222,6 +252,8 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     };
 
     const int max_new = maxFrames > 0 ? maxFrames : 512;
+    LOGI("nGenerate: %zu chars, maxFrames=%d seed=%d temp=%.2f", text.size(), max_new, seed, temp);
+    const int64_t t_gen_start = ggml_time_us();
     int n_frames = 0;
     llama_token sampled = sample_code();
     const float * h_state = llama_get_embeddings_ith(eng.lctx, -1);
@@ -252,7 +284,10 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         return nullptr;
     }
 
-    LOGI("generated %d frames, %zu WAV bytes (%d Hz)", n_frames, data_len, sample_rate);
+    const double gen_s = (ggml_time_us() - t_gen_start) / 1e6;
+    const double audio_s = sample_rate > 0 ? (double) n_samples / sample_rate : 0.0;
+    LOGI("generated %d frames, %zu WAV bytes (%d Hz): %.1fs audio in %.1fs (RTF %.2f)",
+         n_frames, data_len, sample_rate, audio_s, gen_s, audio_s > 0 ? gen_s / audio_s : 0.0);
     jbyteArray out = env->NewByteArray((jsize) data_len);
     if (!out) return nullptr;
     env->SetByteArrayRegion(out, 0, (jsize) data_len, (const jbyte *) data);

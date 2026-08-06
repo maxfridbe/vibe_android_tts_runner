@@ -16,6 +16,8 @@ object TtsEngine {
     @JvmStatic external fun nUnload()
     @JvmStatic external fun nCancel()
     @JvmStatic external fun nLastError(): String
+    /** One line per ggml compute device with free/total memory. */
+    @JvmStatic external fun nDeviceInfo(): String
 
     /** Returns a complete WAV file (24 kHz mono s16) or null on failure/cancel. */
     @JvmStatic external fun nGenerate(
