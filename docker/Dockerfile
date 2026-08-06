@@ -13,7 +13,7 @@ ENV ANDROID_HOME=/opt/android-sdk
 ENV PATH=/usr/local/bin:$PATH:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools
 
 RUN apt-get update && \
-    apt-get install -y wget unzip git ninja-build patch xz-utils --no-install-recommends && \
+    apt-get install -y wget unzip git g++ cmake ninja-build patch xz-utils --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
 # https://developer.android.com/studio#command-tools
@@ -68,7 +68,11 @@ RUN NDK_INC="${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/lin
     wget -q "https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-${VK_VER}.0.tar.gz" -O /tmp/spvh.tar.gz && \
     tar xzf /tmp/spvh.tar.gz -C /tmp && \
     cp -r /tmp/SPIRV-Headers-vulkan-sdk-${VK_VER}.0/include/spirv ${NDK_INC}/ && \
-    rm -rf /tmp/vkh.tar.gz /tmp/vkhpp.tar.gz /tmp/spvh.tar.gz /tmp/Vulkan-* /tmp/SPIRV-*
+    # ggml-vulkan does find_package(SPIRV-Headers CONFIG REQUIRED): install the
+    # CMake package properly (header-only, instant)
+    cmake -G Ninja -S /tmp/SPIRV-Headers-vulkan-sdk-${VK_VER}.0 -B /tmp/spvh-build -DCMAKE_INSTALL_PREFIX=/usr/local >/dev/null && \
+    cmake --install /tmp/spvh-build >/dev/null && \
+    rm -rf /tmp/vkh.tar.gz /tmp/vkhpp.tar.gz /tmp/spvh.tar.gz /tmp/spvh-build /tmp/Vulkan-* /tmp/SPIRV-*
 
 # The NDK's bundled glslc is too old for ggml's coopmat/int-dot feature-probe
 # shaders; shadow it with a current LunarG one.

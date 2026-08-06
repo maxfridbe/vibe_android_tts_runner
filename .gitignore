@@ -7,3 +7,6 @@ local.properties
 # IDE
 .idea/
 *.iml
+
+# CMake/NDK intermediates (bind-mounted build tree)
+**/.cxx/

@@ -33,6 +33,14 @@ if(ANDROID)
     endif()
 endif()
 
+# ggml-vulkan needs the SPIRV-Headers CMake package; the builder image
+# installs it to /usr/local, which the Android toolchain's find-root
+# filtering would otherwise hide.
+if(EXISTS "/usr/local/share/cmake/SPIRV-Headers")
+    list(APPEND CMAKE_FIND_ROOT_PATH "/usr/local")
+    set(SPIRV-Headers_DIR "/usr/local/share/cmake/SPIRV-Headers" CACHE PATH "" FORCE)
+endif()
+
 # Adreno-tuned OpenCL kernels, embedded in the .so; loader resolved through
 # our dlopen shim (Android's linker namespace can't see /vendor/lib64).
 set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)

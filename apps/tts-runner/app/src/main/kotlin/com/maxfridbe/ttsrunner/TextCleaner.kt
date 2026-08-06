@@ -55,7 +55,7 @@ object TextCleaner {
         val container = doc.selectFirst("article")
             ?: doc.selectFirst("main")
             ?: doc.select("div, section")
-                .maxByOrNull { el -> el.children().filter { it.tagName() == "p" }.sumOf { it.text().length } }
+                .maxByOrNull { el -> el.children().sumOf { c -> if (c.tagName() == "p") c.text().length else 0 } }
             ?: doc.body()
 
         val paragraphs = container.select("p, h2, h3, li")
