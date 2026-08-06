@@ -15,6 +15,9 @@ object TtsEngine {
     @JvmStatic external fun nLoad(modelPath: String, mmprojPath: String, backend: String, nThreads: Int): Boolean
     @JvmStatic external fun nUnload()
     @JvmStatic external fun nCancel()
+    /** Clear a pending cancel at the start of a new job. nGenerate never
+     *  clears it itself, so a cancel can't be lost to a call-boundary race. */
+    @JvmStatic external fun nResetCancel()
     @JvmStatic external fun nLastError(): String
     /** One line per ggml compute device with free/total memory. */
     @JvmStatic external fun nDeviceInfo(): String

@@ -47,6 +47,8 @@ class TtsService : Service() {
     @Volatile private var stopRequested = false
     @Volatile private var working = false
     private var workThread: Thread? = null
+    private val jobLock = Any()
+    private var jobEpoch = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val idleRunnable = Runnable { if (!working) stopSelf() }
@@ -83,34 +85,49 @@ class TtsService : Service() {
     }
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean) {
-        // one job at a time; a new share replaces the current playback
+        // one job at a time; a new share replaces the current playback. The
+        // takeover is asynchronous: the previous thread is signalled here and
+        // the NEW thread waits for it without a deadline (a 3s join on this
+        // thread once expired mid-generation, leaving two threads on one
+        // llama context -> "prompt processing failed").
         stopRequested = true
         TtsEngine.nCancel()
-        workThread?.join(3000)
-        stopRequested = false
-        idleHandler.removeCallbacks(idleRunnable)
-
-        startInForeground(notif(title, "Preparing…", 0, 0))
-        wakeLock?.release()
-        wakeLock = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ttsrunner:generate")
-            .apply { acquire(60 * 60_000L) }
-
-        working = true
+        val previous = workThread
+        val epoch: Int
+        synchronized(jobLock) {
+            epoch = ++jobEpoch
+            idleHandler.removeCallbacks(idleRunnable)
+            startInForeground(notif(title, "Preparing…", 0, 0))
+            wakeLock?.release()
+            wakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ttsrunner:generate")
+                .apply { acquire(60 * 60_000L) }
+            working = true
+        }
         workThread = thread(name = "tts-generate") {
             try {
+                previous?.join()
+                stopRequested = false
+                TtsEngine.nResetCancel()
                 runJob(text, title, voiceName, backend, save)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
             } finally {
                 // runs on every survivable exit; only a process death (native
-                // crash, lmkd kill) leaves the crash marker behind
+                // crash, lmkd kill) leaves the crash marker behind. Skip the
+                // service-level teardown if a newer job has already taken over
+                // (its runJob only starts after our join() returns, but this
+                // finally may run after its startJob promoted the service).
                 java.io.File(filesDir, "job-inflight").delete()
-                working = false
-                wakeLock?.release(); wakeLock = null
-                idleHandler.postDelayed(idleRunnable, IDLE_TIMEOUT_MS)
-                stopForeground(STOP_FOREGROUND_DETACH)
+                synchronized(jobLock) {
+                    if (jobEpoch == epoch) {
+                        working = false
+                        wakeLock?.release(); wakeLock = null
+                        idleHandler.postDelayed(idleRunnable, IDLE_TIMEOUT_MS)
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                    }
+                }
             }
         }
     }
@@ -126,7 +143,7 @@ class TtsService : Service() {
         if (marker.exists() && backendWanted != "cpu") {
             backend = "cpu"
             DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; falling back to cpu")
-            broadcast("note", 0, 0, "GPU engine crashed last time — using CPU for this run")
+            broadcast("note", 0, 0, "Previous run died mid-generation — using CPU for this run")
         }
         marker.writeText(backend)
         DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
@@ -265,6 +282,9 @@ class TtsService : Service() {
                 chunk, voicePath, "en", maxFrames, seed, 0.8f, 0.95f,
                 object : TtsEngine.ProgressCallback {
                     override fun onProgress(framesDone: Int, framesMax: Int) {
+                        // re-assert cancel: a nCancel that raced a generate-call
+                        // boundary is otherwise absorbed by the next chunk
+                        if (stopRequested) TtsEngine.nCancel()
                         onFrames(framesDone, framesMax)
                     }
                 })
@@ -297,7 +317,7 @@ class TtsService : Service() {
         TtsEngine.nUnload()
         broadcast("loading", 0, 0, model.label)
         DebugLog.log(this, "TtsService", "devices:\n${runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "$it" }}")
-        val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 6)
+        val threads = bigCoreCount()
         val t0 = System.currentTimeMillis()
         val ok = TtsEngine.nLoad(
             ModelManager.talkerPath(this, model), ModelManager.mmprojPath(this, model), backend, threads)
@@ -305,6 +325,23 @@ class TtsService : Service() {
             "in ${System.currentTimeMillis() - t0} ms" + if (!ok) " err=${TtsEngine.nLastError()}" else "")
         loadedKey = if (ok) key else null
         return ok
+    }
+
+    /** Threads = number of performance cores (max_freq >= 80% of the fastest
+     *  core). ggml splits work statically, so one little core in the pool
+     *  drags every layer down to its speed (6 threads on SD 8 Gen 2 ran
+     *  slower than its 5 big cores would). */
+    private fun bigCoreCount(): Int {
+        val freqs = (0 until Runtime.getRuntime().availableProcessors()).mapNotNull { c ->
+            runCatching {
+                java.io.File("/sys/devices/system/cpu/cpu$c/cpufreq/cpuinfo_max_freq").readText().trim().toLong()
+            }.getOrNull()
+        }
+        if (freqs.isEmpty()) return (Runtime.getRuntime().availableProcessors() - 1).coerceIn(2, 6)
+        val top = freqs.max()
+        val n = freqs.count { it * 10 >= top * 8 }.coerceIn(2, 6)
+        DebugLog.log(this, "TtsService", "cpu max freqs $freqs -> $n threads")
+        return n
     }
 
     private fun playLoop(queue: LinkedBlockingQueue<ByteArray>) {

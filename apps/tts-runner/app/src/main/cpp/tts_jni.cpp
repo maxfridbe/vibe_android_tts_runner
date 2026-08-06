@@ -74,7 +74,10 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     params.mmproj.path = jstr(env, jmmproj);
     params.embedding   = true;  // gen_audio needs hidden states
     params.n_batch     = 512;
-    params.n_ctx       = 8192;
+    // per-utterance use peaks ~1.3k positions (speaker ref + text + frames);
+    // 4096 halves KV-cache RAM vs 8192 (~450 MB on the 1.7B) — phones OOM-kill
+    // silently under memory pressure, so every MB counts
+    params.n_ctx       = 4096;
     params.cpuparams.n_threads = nThreads > 0 ? nThreads : 4;
     params.warmup      = false;
 
@@ -144,6 +147,14 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
     g_cancel = true;
 }
 
+// The cancel flag is sticky: nGenerate does NOT clear it on entry, so a
+// cancel that lands between two nGenerate calls still kills the next one.
+// The service clears it explicitly when a new job takes over.
+extern "C" JNIEXPORT void JNICALL
+Java_com_maxfridbe_ttsrunner_TtsEngine_nResetCancel(JNIEnv *, jclass) {
+    g_cancel = false;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nLastError(JNIEnv * env, jclass) {
     return env->NewStringUTF(g_last_error.c_str());
@@ -187,7 +198,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         g_last_error = "engine not loaded";
         return nullptr;
     }
-    g_cancel = false;
+    if (g_cancel) return nullptr;   // sticky cancel, see nResetCancel
     g_last_error.clear();
     Engine & eng = *g_engine;
 

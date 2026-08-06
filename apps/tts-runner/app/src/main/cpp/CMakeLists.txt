@@ -34,10 +34,11 @@ if(ANDROID)
     set(GGML_MMAP OFF CACHE BOOL "" FORCE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        # armv8.2+dotprod runs on ~2019+ SoCs (SD 855 and later); i8mm/armv8.6
-        # would be faster but SIGILLs on anything older than ~2022
-        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -march=armv8.2-a+dotprod+fp16")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+dotprod+fp16")
+        # +i8mm enables ggml's int8 matmul kernels (big quant-gemm speedup);
+        # needs a ~2021+ SoC (SD 888/8 Gen 1 and later, Tensor, Dimensity
+        # 1000+). Older phones SIGILL — drop i8mm here to support them.
+        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -march=armv8.2-a+dotprod+fp16+i8mm")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+dotprod+fp16+i8mm")
     endif()
 endif()
 
