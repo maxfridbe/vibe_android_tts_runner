@@ -224,13 +224,46 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
             return nullptr;
         }
         speaker_bitmap.reset(wrapper.bitmap);
+        // cap the reference length: the speaker-encoder graph's compute
+        // buffer scales with it, and phones get lmkd-killed at the peak
+        // (a 16 s ref contributed to a 5.7 GB RSS kill on an 11 GB phone);
+        // 8 s is plenty for voice cloning
+        if (mtmd_bitmap_is_audio(speaker_bitmap.get())) {
+            int sr = mtmd_get_audio_sample_rate(eng.mctx.get());
+            if (sr <= 0) sr = 24000;
+            const size_t max_samples = (size_t) sr * 8;
+            const size_t n_samples   = mtmd_bitmap_get_n_bytes(speaker_bitmap.get()) / sizeof(float);
+            if (n_samples > max_samples) {
+                const float * pcm = (const float *) mtmd_bitmap_get_data(speaker_bitmap.get());
+                mtmd_bitmap * cut = mtmd_bitmap_init_from_audio(max_samples, pcm);
+                if (cut) {
+                    LOGI("speaker ref capped: %zu -> %zu samples (%d Hz)", n_samples, max_samples, sr);
+                    speaker_bitmap.reset(cut);
+                }
+            }
+        }
     }
 
+    // official qwen-tts talker generation config: top_k 50, top_p 1.0,
+    // temp 0.9, repetition_penalty 1.05, and all special/control tokens
+    // (last 1024 vocab ids) suppressed except codec-EOS — without the
+    // suppression the talker can sample control tokens mid-stream
     common_params_sampling sparams;
     sparams.seed  = seed;
     sparams.temp  = temp;
     sparams.top_p = topP;
-    sparams.top_k = 40;
+    sparams.top_k = 50;
+    sparams.penalty_repeat = 1.05f;
+    sparams.penalty_last_n = 1024;
+    {
+        const llama_vocab * v = llama_model_get_vocab(eng.model);
+        const int n_vocab = llama_vocab_n_tokens(v);
+        for (llama_token t = n_vocab - 1024; t < n_vocab; t++) {
+            if (t >= 0 && !llama_vocab_is_eog(v, t)) {
+                sparams.logit_bias.push_back({t, -INFINITY});
+            }
+        }
+    }
     std::unique_ptr<common_sampler, decltype(&common_sampler_free)>
         smpl(common_sampler_init(eng.model, sparams), common_sampler_free);
     if (!smpl) {
@@ -245,8 +278,8 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     inp.prompt_len  = text.size();
     inp.speaker_ref = speaker_bitmap.get();
     inp.lang        = lang.c_str();
-    inp.top_k       = sparams.top_k;
-    inp.top_p       = sparams.top_p;
+    inp.top_k       = 50;    // official subtalker config: top_k 50, top_p 1.0
+    inp.top_p       = 1.0f;
     inp.out_type    = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
 
     if (gen.set_input(&inp) != 0) {
@@ -256,6 +289,12 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     }
 
     for (;;) {
+        // framesDone=0 heartbeat: the speaker-ref encode + prompt decode take
+        // tens of seconds on phones; without this the UI looks hung
+        if (onProgress) {
+            env->CallVoidMethod(progressCb, onProgress, 0, maxFrames > 0 ? maxFrames : 512);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        }
         int32_t ret = gen.step_prompt(eng.params.n_batch);
         if (ret < 0) {
             g_last_error = "prompt processing failed";
@@ -290,7 +329,8 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         }
         h_state = h_next;
         sampled = sample_code();
-        if (onProgress && (n_frames % 12 == 0)) {
+        // every frame (~0.5-1 s on phone CPUs); the Kotlin side throttles
+        if (onProgress) {
             env->CallVoidMethod(progressCb, onProgress, n_frames + 1, max_new);
             if (env->ExceptionCheck()) { env->ExceptionClear(); }
         }

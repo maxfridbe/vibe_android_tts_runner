@@ -46,14 +46,23 @@ class TtsService : Service() {
 
     @Volatile private var stopRequested = false
     @Volatile private var working = false
+    @Volatile private var bound = false
     private var workThread: Thread? = null
     private val jobLock = Any()
     private var jobEpoch = 0
+    private val binder = android.os.Binder()
     private var wakeLock: PowerManager.WakeLock? = null
     private val idleHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val idleRunnable = Runnable { if (!working) stopSelf() }
+    private val idleRunnable = Runnable { if (!working && !bound) stopSelf() }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    // MainActivity binds while it is on screen, which keeps this process (and
+    // the loaded model) alive: "model stays loaded as long as the app is open"
+    override fun onBind(intent: Intent?): IBinder { bound = true; return binder }
+    override fun onUnbind(intent: Intent?): Boolean {
+        bound = false
+        if (!working) idleHandler.postDelayed(idleRunnable, IDLE_TIMEOUT_MS)
+        return false
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -183,6 +192,10 @@ class TtsService : Service() {
             fail("Could not create output file: ${e.message}"); return
         }
 
+        // last-audio capture for the in-app player: raw PCM appended per chunk,
+        // wrapped into a WAV when the job ends
+        pcmFile().delete()
+
         var failed: String? = null
         for ((i, chunk) in chunks.withIndex()) {
             if (stopRequested) break
@@ -212,6 +225,7 @@ class TtsService : Service() {
             }
             DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
                 "${"%.1f".format(pcm.size / 2.0 / SAMPLE_RATE)}s audio in ${System.currentTimeMillis() - t0} ms")
+            runCatching { pcmFile().appendBytes(pcm) }
             if (saver != null) {
                 try {
                     saver.write(pcm)
@@ -228,6 +242,7 @@ class TtsService : Service() {
             player.join()
         }
         DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
+        finalizeLastWav()
 
         when {
             stopRequested -> { saver?.abort(); broadcast("stopped", 0, 0, "") }
@@ -244,6 +259,32 @@ class TtsService : Service() {
                 update(notif(title, "Saved to $path", 0, 0))
             }
             else -> broadcast("done", chunks.size, chunks.size, "")
+        }
+    }
+
+    private fun pcmFile() = java.io.File(filesDir, "last_audio.pcm")
+
+    /** Wrap the accumulated PCM into files/last_audio.wav for the in-app
+     *  player (both processes share filesDir). */
+    private fun finalizeLastWav() {
+        val pcm = pcmFile()
+        val len = pcm.length()
+        if (len < 2) { pcm.delete(); return }
+        try {
+            java.io.File(filesDir, "last_audio.wav").outputStream().use { out ->
+                val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+                h.put("RIFF".toByteArray()); h.putInt(36 + len.toInt())
+                h.put("WAVE".toByteArray()); h.put("fmt ".toByteArray())
+                h.putInt(16); h.putShort(1); h.putShort(1)
+                h.putInt(SAMPLE_RATE); h.putInt(SAMPLE_RATE * 2)
+                h.putShort(2); h.putShort(16)
+                h.put("data".toByteArray()); h.putInt(len.toInt())
+                out.write(h.array())
+                pcm.inputStream().use { it.copyTo(out) }
+            }
+            pcm.delete()
+        } catch (e: Exception) {
+            DebugLog.log(this, "TtsService", "finalizeLastWav failed", e)
         }
     }
 
@@ -275,11 +316,12 @@ class TtsService : Service() {
     private fun generatePlausible(chunk: String, voicePath: String, onFrames: (Int, Int) -> Unit): ByteArray? {
         val expectSecs = chunk.length / 16.0
         val maxFrames = ((expectSecs * 12.5 * 2.2).toInt() + 64).coerceIn(128, 2048)
+        var best: ByteArray? = null   // shortest non-degenerate take so far
         for (attempt in 0 until 3) {
             if (stopRequested) return null
             val seed = if (attempt == 0) 42 else Random.nextInt(1, 1 shl 30)
             val wav = TtsEngine.nGenerate(
-                chunk, voicePath, "en", maxFrames, seed, 0.8f, 0.95f,
+                chunk, voicePath, "en", maxFrames, seed, 0.9f, 1.0f,  // official qwen-tts talker params
                 object : TtsEngine.ProgressCallback {
                     override fun onProgress(framesDone: Int, framesMax: Int) {
                         // re-assert cancel: a nCancel that raced a generate-call
@@ -290,12 +332,12 @@ class TtsService : Service() {
                 })
             if (wav == null) {
                 DebugLog.log(this, "TtsService", "nGenerate null (attempt $attempt): ${TtsEngine.nLastError()}")
-                return null
+                return best
             }
             val pcm = wavToPcm(wav)
             if (pcm == null) {
                 DebugLog.log(this, "TtsService", "wavToPcm failed on ${wav.size} bytes (attempt $attempt)")
-                return null
+                return best
             }
             val secs = pcm.size / 2.0 / SAMPLE_RATE
             val tooShort = secs < minOf(3.0, chunk.length / 40.0)
@@ -303,11 +345,12 @@ class TtsService : Service() {
             // on-device: 12.6s for an 82-char sentence) well before the cap
             val runaway = secs >= 0.95 * (maxFrames / 12.5) || secs > expectSecs * 2.0 + 1.0
             if (!tooShort && !runaway) return pcm
+            if (!tooShort && (best == null || pcm.size < best!!.size)) best = pcm
             DebugLog.log(this, "TtsService", "implausible chunk (${"%.1f".format(secs)}s for ${chunk.length} chars, seed $seed), re-rolling")
         }
-        // all re-rolls implausible: use the last attempt rather than failing hard
-        val wav = TtsEngine.nGenerate(chunk, voicePath, "en", maxFrames, 42, 0.8f, 0.95f, null) ?: return null
-        return wavToPcm(wav)
+        // all re-rolls implausible: keep the shortest overlong take (the old
+        // code re-generated seed 42 — i.e. reproduced the worst attempt)
+        return best
     }
 
     private var loadedKey: String? = null

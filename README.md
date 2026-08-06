@@ -64,8 +64,16 @@ is re-rolled with a fresh seed, up to twice.
 
 ## Backends and the llama.cpp patch
 
-`docker/patches/qwen3tts-fixes.patch` carries two fixes (validated on a
-desktop RTX 5070, 2026-08-05) that upstream does not have yet:
+`docker/patches/qwen3tts-fixes.patch` carries three fixes (validated on a
+desktop RTX 5070, 2026-08-05/06) that upstream does not have yet:
+
+- **Double-read** (`tools/mtmd/mtmd-helper-gen.cpp`): the generation loop
+  overlaid the text embeddings onto every generated frame (a streaming-mode
+  leftover), feeding the utterance to the model a second time — it then read
+  the text twice (~2.3x duration, whisper-confirmed, most seeds). The
+  official non-streaming pipeline adds only `tts_pad`; fixed to match, and
+  the talker sampling now mirrors the official generation config (top_k 50,
+  top_p 1.0, temp 0.9, repetition_penalty 1.05, control tokens suppressed).
 
 - **CPU** (`tools/mtmd/clip.cpp`): the multi-stage TTS generator leaves
   stage-unused graph inputs uninitialized; stale allocator memory then trips

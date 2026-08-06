@@ -32,7 +32,16 @@ class MainActivity : Activity() {
     private lateinit var voicesGroup: RadioGroup
     private lateinit var runStatus: TextView
     private lateinit var runProgress: ProgressBar
+    private lateinit var waveform: WaveformView
+    private lateinit var playBtn: Button
+    private var player: android.media.MediaPlayer? = null
     private var downloading = false
+    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private val engineConn = object : android.content.ServiceConnection {
+        override fun onServiceConnected(n: android.content.ComponentName?, b: android.os.IBinder?) {}
+        override fun onServiceDisconnected(n: android.content.ComponentName?) {}
+    }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -49,9 +58,11 @@ class MainActivity : Activity() {
                     if (total > 0) runProgress.progress = chunk * 1000 / total
                     "Generating chunk ${chunk + 1}/$total: “$message…”"
                 }
-                "frames" -> "Generating… ${"%.1f".format(chunk / 12.5)} s of audio"
-                "done" -> { runProgress.progress = 1000; "Done ($total chunks)" }
-                "saved" -> { runProgress.progress = 1000; "Saved to $message" }
+                "frames" ->
+                    if (chunk == 0) "Processing text & voice…"
+                    else "Generating… ${"%.1f".format(chunk / 12.5)} s of audio"
+                "done" -> { runProgress.progress = 1000; refreshPlayer(); "Done ($total chunks)" }
+                "saved" -> { runProgress.progress = 1000; refreshPlayer(); "Saved to $message" }
                 "stopped" -> { runProgress.progress = 0; "Stopped" }
                 "note" -> message
                 "error" -> { runProgress.progress = 0; "Error: $message" }
@@ -76,6 +87,17 @@ class MainActivity : Activity() {
         root.addView(TextView(this).apply {
             text = "Share text or a link to TTS Runner from any app, pick a voice, listen."
         })
+        root.addView(TextView(this).apply {
+            text = "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+            textSize = 12f
+        })
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // without this the foreground-service notification (the only
+            // progress surface outside the app) is silently suppressed
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 12)
+        }
 
         header("1 · Model")
         modelGroup = RadioGroup(this)
@@ -171,6 +193,23 @@ class MainActivity : Activity() {
         runProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         root.addView(runProgress)
 
+        // last generated audio: play/pause + tappable waveform
+        val playerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        playBtn = Button(this).apply {
+            text = "▶"
+            setOnClickListener { togglePlayback() }
+        }
+        playerRow.addView(playBtn,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        waveform = WaveformView(this).apply {
+            onSeek = { frac ->
+                player?.let { it.seekTo((it.duration * frac).toInt()) }
+            }
+        }
+        playerRow.addView(waveform,
+            LinearLayout.LayoutParams(0, (48 * resources.displayMetrics.density).toInt(), 1f))
+        root.addView(playerRow)
+
         header("5 · Debug")
         val statusText = TextView(this).apply { textSize = 12f; setTypeface(android.graphics.Typeface.MONOSPACE) }
         root.addView(statusText)
@@ -204,21 +243,100 @@ class MainActivity : Activity() {
                 }
             }
         })
+        debugButtons.addView(Button(this).apply {
+            text = "Clear log"
+            setOnClickListener { DebugLog.clear(this@MainActivity); toast("Log cleared") }
+        })
         root.addView(debugButtons)
 
         setContentView(ScrollView(this).apply { addView(root) })
         refreshModelUi()
         refreshVoices()
+        refreshPlayer()
+    }
+
+    /** Keep the :engine process (and its loaded model) alive while the app is
+     *  on screen. */
+    override fun onStart() {
+        super.onStart()
+        bindService(Intent(this, TtsService::class.java), engineConn, Context.BIND_AUTO_CREATE)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        runCatching { unbindService(engineConn) }
     }
 
     override fun onResume() {
         super.onResume()
         registerReceiver(statusReceiver, IntentFilter(TtsService.STATUS_BROADCAST), RECEIVER_NOT_EXPORTED)
+        refreshPlayer()
     }
 
     override fun onPause() {
         super.onPause()
         unregisterReceiver(statusReceiver)
+    }
+
+    override fun onDestroy() {
+        player?.release(); player = null
+        super.onDestroy()
+    }
+
+    // ---- last-audio player -------------------------------------------------
+
+    private fun lastAudio() = java.io.File(filesDir, "last_audio.wav")
+
+    private fun refreshPlayer() {
+        val f = lastAudio()
+        val visible = f.exists() && f.length() > 44
+        playBtn.isEnabled = visible
+        if (visible) thread {
+            waveform.loadWav(f)
+            runOnUiThread { waveform.setProgress(0f) }
+        }
+    }
+
+    private val progressTicker = object : Runnable {
+        override fun run() {
+            val p = player ?: return
+            if (p.isPlaying) {
+                if (p.duration > 0) waveform.setProgress(p.currentPosition / p.duration.toFloat())
+                ui.postDelayed(this, 200)
+            }
+        }
+    }
+
+    private fun togglePlayback() {
+        val p = player
+        if (p != null && p.isPlaying) {
+            p.pause()
+            playBtn.text = "▶"
+            return
+        }
+        if (p != null) {
+            p.start()
+            playBtn.text = "❚❚"
+            ui.post(progressTicker)
+            return
+        }
+        try {
+            player = android.media.MediaPlayer().apply {
+                setDataSource(lastAudio().absolutePath)
+                prepare()
+                setOnCompletionListener {
+                    playBtn.text = "▶"
+                    waveform.setProgress(1f)
+                    it.release(); player = null
+                }
+                start()
+            }
+            playBtn.text = "❚❚"
+            ui.post(progressTicker)
+        } catch (e: Exception) {
+            toast("Playback failed: ${e.message}")
+            player?.release(); player = null
+        }
     }
 
     private fun currentModel(): ModelManager.CatalogModel =

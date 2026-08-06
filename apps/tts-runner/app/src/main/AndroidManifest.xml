@@ -45,11 +45,14 @@
             </intent-filter>
         </activity>
 
-        <!-- separate process: a native crash in llama.cpp only kills :engine -->
+        <!-- separate process: a native crash in llama.cpp only kills :engine.
+             exported=true so `adb shell am start-foreground-service` can drive
+             it for automated testing (no permission-protected data exposed;
+             worst case someone makes the phone talk). -->
         <service
             android:name=".TtsService"
             android:process=":engine"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

@@ -37,6 +37,12 @@ object DebugLog {
         log(ctx, tag, "$msg: ${t.javaClass.simpleName}: ${t.message}\n${t.stackTraceToString().take(2000)}")
     }
 
+    /** Wipe the app log and the logcat buffers (best-effort). */
+    fun clear(ctx: Context) {
+        runCatching { file(ctx).delete() }
+        runCatching { Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor() }
+    }
+
     private fun isEngineProcess(ctx: Context): Boolean {
         val am = ctx.getSystemService(ActivityManager::class.java)
         val pid = android.os.Process.myPid()
@@ -47,7 +53,7 @@ object DebugLog {
      *  native lib loads), model/voice inventory, our log, then logcat. */
     fun buildReport(ctx: Context): String {
         val sb = StringBuilder()
-        sb.appendLine("=== TTS Runner debug report ${fmt.format(Date())} ===")
+        sb.appendLine("=== TTS Runner v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) debug report ${fmt.format(Date())} ===")
         sb.appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE}) android ${Build.VERSION.RELEASE} sdk ${Build.VERSION.SDK_INT}")
         sb.appendLine("soc: ${if (Build.VERSION.SDK_INT >= 31) Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL else "n/a"} abis: ${Build.SUPPORTED_ABIS.joinToString()}")
 
@@ -78,17 +84,30 @@ object DebugLog {
         val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
         sb.appendLine("prefs: backend=${prefs.getString("backend", "cpu")} model=${prefs.getString("model_id", null)} voice=${prefs.getString("default_voice", null)}")
 
-        sb.appendLine("--- app log (debug.log) ---")
+        // process exit reasons are the ground truth for silent deaths (lmkd
+        // SIGKILLs leave no tombstone); rss at kill time is the key number
+        sb.appendLine("--- recent process exits ---")
         try {
-            sb.appendLine(file(ctx).readText().takeLast(64 * 1024))
+            am.getHistoricalProcessExitReasons(ctx.packageName, 0, 6).forEach { e ->
+                sb.appendLine("${fmt.format(Date(e.timestamp))} ${e.processName.substringAfterLast(':', "ui")} " +
+                    "reason=${e.reason} (${exitReasonName(e.reason)}) rss=${e.rss / 256} MB status=${e.status}")
+            }
+        } catch (e: Exception) {
+            sb.appendLine("exit-info unavailable: $e")
+        }
+
+        // kept deliberately small so reports paste comfortably
+        sb.appendLine("--- app log (debug.log, tail) ---")
+        try {
+            sb.appendLine(file(ctx).readText().lines().takeLast(60).joinToString("\n"))
         } catch (e: Exception) {
             sb.appendLine("no app log: $e")
         }
 
-        sb.appendLine("--- logcat (main) ---")
+        sb.appendLine("--- logcat (main, tail) ---")
         sb.appendLine(logcat("main"))
-        sb.appendLine("--- logcat (crash) ---")
-        sb.appendLine(logcat("crash"))
+        sb.appendLine("--- last native crash (condensed) ---")
+        sb.appendLine(lastCrash())
         return sb.toString()
     }
 
@@ -99,10 +118,46 @@ object DebugLog {
         // our UID only sees its own lines anyway; keep the interesting tags and the tail
         val lines = text.lines().filter { l ->
             listOf("TtsRunnerNative", "llama.cpp", "TtsService", "TtsRunner", "AndroidRuntime",
-                "DEBUG", "libc", "lowmemorykiller", "ActivityManager").any { l.contains(it) } || buffer == "crash"
+                "DEBUG", "lowmemorykiller", "ActivityManager").any { l.contains(it) } || buffer == "crash"
         }
-        lines.takeLast(400).joinToString("\n")
+        lines.takeLast(80).joinToString("\n")
     } catch (e: Exception) {
         "logcat failed: $e"
+    }
+
+    /** Only the newest crash, and only its interesting lines: signal/abort
+     *  header plus the first dozen backtrace frames — a full multi-crash dump
+     *  was 3/4 of the old report. */
+    private fun lastCrash(): String {
+        val raw = logcatRaw("crash")
+        val start = raw.lastIndexOf("Fatal signal")
+        if (start < 0) return "(none)"
+        val lines = raw.substring(start).lines()
+        val keep = ArrayList<String>()
+        var frames = 0
+        for (l in lines) {
+            val interesting = l.contains("Fatal signal") || l.contains("Abort message") ||
+                l.contains("Cmdline") || l.contains("backtrace:") || l.contains(">>>")
+            val isFrame = Regex("#\\d\\d pc").containsMatchIn(l)
+            if (isFrame) { if (frames++ >= 14) continue }
+            if (interesting || isFrame) keep.add(l)
+        }
+        return keep.joinToString("\n")
+    }
+
+    private fun exitReasonName(r: Int): String = when (r) {
+        1 -> "EXIT_SELF"; 2 -> "SIGNALED"; 3 -> "LOW_MEMORY"; 4 -> "APP CRASH"
+        5 -> "NATIVE CRASH"; 6 -> "ANR"; 10 -> "USER REQUESTED"; 13 -> "OTHER"
+        16 -> "PACKAGE UPDATED"
+        else -> "code $r"
+    }
+
+    private fun logcatRaw(buffer: String): String = try {
+        val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "-b", buffer))
+        val text = p.inputStream.bufferedReader().readText()
+        p.waitFor()
+        text
+    } catch (e: Exception) {
+        ""
     }
 }

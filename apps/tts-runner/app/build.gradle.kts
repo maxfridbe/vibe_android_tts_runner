@@ -75,6 +75,10 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true   // BuildConfig.VERSION_NAME shown in the UI + debug report
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
