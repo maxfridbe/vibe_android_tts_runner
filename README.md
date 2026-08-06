@@ -25,9 +25,11 @@ pinned llama.cpp, then compiles llama.cpp (CPU + OpenCL backends) for arm64.
    voice (any wav/mp3/flac with 10–20 s of clean speech from one speaker).
 2. From any app, share text or an article URL → "Read aloud (TTS Runner)".
    Selected text also works via the text-selection menu.
-3. Pick a voice in the popup, hit Speak. Generation streams: playback starts
-   after the first chunk (~25 s of audio), a notification shows progress and
-   a Stop button.
+3. Pick a voice in the popup, then **Speak** (streamed playback: audio starts
+   after the first chunk, ~25 s) or **Save** (renders the whole text in the
+   background to `Music/TTS Runner/<title>.m4a` — AAC, since Android has no
+   MP3 encoder). A notification shows a real progress bar and a Stop button;
+   generation keeps running with the screen off.
 
 Shared URLs are fetched and run through a small readability pass (densest
 `<article>`/`<p>` container); markdown noise, inline URLs, and `[17]`-style

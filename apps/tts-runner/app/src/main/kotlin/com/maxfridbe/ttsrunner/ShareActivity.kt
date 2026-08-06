@@ -24,6 +24,7 @@ class ShareActivity : Activity() {
     private lateinit var preview: TextView
     private lateinit var voices: RadioGroup
     private lateinit var speakBtn: Button
+    private lateinit var saveBtn: Button
     private var cleaned: TextCleaner.Cleaned? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,10 +54,16 @@ class ShareActivity : Activity() {
             text = "Cancel"
             setOnClickListener { finish() }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        saveBtn = Button(this).apply {
+            text = "Save"   // render to Music/TTS Runner/*.m4a in the background
+            isEnabled = false
+            setOnClickListener { speak(save = true) }
+        }
+        buttons.addView(saveBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         speakBtn = Button(this).apply {
             text = "Speak"
             isEnabled = false
-            setOnClickListener { speak() }
+            setOnClickListener { speak(save = false) }
         }
         buttons.addView(speakBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(buttons)
@@ -87,6 +94,7 @@ class ShareActivity : Activity() {
                 status.text = listOfNotNull(result.title, "$words words · ~${words / 150} min").joinToString(" — ")
                 preview.text = result.text.take(300)
                 speakBtn.isEnabled = voices.childCount > 0
+                saveBtn.isEnabled = voices.childCount > 0
             }
         }
     }
@@ -116,7 +124,7 @@ class ShareActivity : Activity() {
         if (voices.checkedRadioButtonId == -1) voices.check(0)
     }
 
-    private fun speak() {
+    private fun speak(save: Boolean) {
         val c = cleaned ?: return
         val list = VoiceStore.list(this)
         val voice = list.getOrNull(voices.checkedRadioButtonId) ?: return
@@ -128,7 +136,8 @@ class ShareActivity : Activity() {
                 .putExtra(TtsService.EXTRA_TEXT, c.text)
                 .putExtra(TtsService.EXTRA_TITLE, c.title ?: "Shared text")
                 .putExtra(TtsService.EXTRA_VOICE, voice.name)
-                .putExtra(TtsService.EXTRA_BACKEND, backend))
+                .putExtra(TtsService.EXTRA_BACKEND, backend)
+                .putExtra(TtsService.EXTRA_SAVE, save))
         finish()
     }
 

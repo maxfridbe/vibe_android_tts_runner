@@ -37,6 +37,7 @@ class TtsService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_VOICE = "voice"
         const val EXTRA_BACKEND = "backend"
+        const val EXTRA_SAVE = "save"   // true: render to Music/TTS Runner/*.m4a instead of playing
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -74,13 +75,14 @@ class TtsService : Service() {
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "Text to speech"
                 val voice = intent.getStringExtra(EXTRA_VOICE) ?: ""
                 val backend = intent.getStringExtra(EXTRA_BACKEND) ?: "cpu"
-                startJob(text, title, voice, backend)
+                val save = intent.getBooleanExtra(EXTRA_SAVE, false)
+                startJob(text, title, voice, backend, save)
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startJob(text: String, title: String, voiceName: String, backend: String) {
+    private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean) {
         // one job at a time; a new share replaces the current playback
         stopRequested = true
         TtsEngine.nCancel()
@@ -97,7 +99,7 @@ class TtsService : Service() {
         working = true
         workThread = thread(name = "tts-generate") {
             try {
-                runJob(text, title, voiceName, backend)
+                runJob(text, title, voiceName, backend, save)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -116,7 +118,7 @@ class TtsService : Service() {
     /** Non-null end-of-stream marker: LinkedBlockingQueue rejects null. */
     private val EOS = ByteArray(0)
 
-    private fun runJob(text: String, title: String, voiceName: String, backendWanted: String) {
+    private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean) {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
@@ -156,15 +158,24 @@ class TtsService : Service() {
         if (chunks.isEmpty()) { fail("Nothing to speak"); return }
 
         val queue = LinkedBlockingQueue<ByteArray>(2)
-        val player = thread(name = "tts-play") { playLoop(queue) }
+        val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }
+        val saver = if (!save) null else try {
+            AudioSaver(this, title)
+        } catch (e: Exception) {
+            DebugLog.log(this, "TtsService", "AudioSaver init failed", e)
+            fail("Could not create output file: ${e.message}"); return
+        }
 
         var failed: String? = null
         for ((i, chunk) in chunks.withIndex()) {
             if (stopRequested) break
-            update(notif(title, "Chunk ${i + 1}/${chunks.size}", i, chunks.size))
+            update(notif(title, "Chunk ${i + 1}/${chunks.size}", i * 1000 / chunks.size, 1000))
             broadcast("generating", i, chunks.size, chunk.take(80))
             val t0 = System.currentTimeMillis()
-            var pcm = generatePlausible(chunk, voice.file.absolutePath)
+            val onFrames = { framesDone: Int, framesMax: Int ->
+                reportProgress(title, i, chunks.size, framesDone, framesMax)
+            }
+            var pcm = generatePlausible(chunk, voice.file.absolutePath, onFrames)
             if (pcm == null && !stopRequested && backend != "cpu") {
                 // a caught native exception drops the engine; retry this chunk
                 // on CPU in-process instead of dying and using the marker path
@@ -174,7 +185,7 @@ class TtsService : Service() {
                 marker.writeText(backend)
                 loadedKey = null
                 if (ensureLoaded(model, backend)) {
-                    pcm = generatePlausible(chunk, voice.file.absolutePath)
+                    pcm = generatePlausible(chunk, voice.file.absolutePath, onFrames)
                 }
             }
             if (pcm == null) {
@@ -184,23 +195,67 @@ class TtsService : Service() {
             }
             DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
                 "${"%.1f".format(pcm.size / 2.0 / SAMPLE_RATE)}s audio in ${System.currentTimeMillis() - t0} ms")
-            queue.put(pcm)
+            if (saver != null) {
+                try {
+                    saver.write(pcm)
+                } catch (e: Exception) {
+                    DebugLog.log(this, "TtsService", "saver.write failed", e)
+                    failed = "Save failed: ${e.message}"; break
+                }
+            } else {
+                queue.put(pcm)
+            }
         }
-        queue.put(EOS)
-        player.join()
+        if (player != null) {
+            queue.put(EOS)
+            player.join()
+        }
         DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
 
         when {
-            stopRequested -> broadcast("stopped", 0, 0, "")
-            failed != null -> fail(failed)
+            stopRequested -> { saver?.abort(); broadcast("stopped", 0, 0, "") }
+            failed != null -> { saver?.abort(); fail(failed) }
+            saver != null -> {
+                val path = try {
+                    saver.finish()
+                } catch (e: Exception) {
+                    DebugLog.log(this, "TtsService", "saver.finish failed", e)
+                    fail("Save failed: ${e.message}"); return
+                }
+                DebugLog.log(this, "TtsService", "saved: $path")
+                broadcast("saved", chunks.size, chunks.size, path)
+                update(notif(title, "Saved to $path", 0, 0))
+            }
             else -> broadcast("done", chunks.size, chunks.size, "")
         }
     }
 
+    /** Whole-job progress (0–1000‰), fed to both the notification and the UI.
+     *  In-chunk position uses expected frames (cap / 2.2), clamped, so the bar
+     *  moves smoothly instead of stalling at the safety margin. */
+    private var lastNotifUpdate = 0L
+    private fun reportProgress(title: String, chunkIdx: Int, totalChunks: Int, framesDone: Int, framesMax: Int) {
+        val within = minOf(1.0, framesDone / (framesMax / 2.2))
+        val permille = (((chunkIdx + within) / totalChunks) * 1000).toInt().coerceIn(0, 1000)
+        val now = System.currentTimeMillis()
+        if (now - lastFramesBroadcast > 500) {
+            lastFramesBroadcast = now
+            sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)
+                .putExtra("state", "frames").putExtra("chunk", framesDone)
+                .putExtra("total", framesMax).putExtra("permille", permille)
+                .putExtra("message", ""))
+        }
+        if (now - lastNotifUpdate > 1500) {
+            lastNotifUpdate = now
+            update(notif(title, "Chunk ${chunkIdx + 1}/$totalChunks", permille, 1000))
+        }
+    }
+
     /** Generation with the audiobook maker's plausibility guard: reject
-     *  runaway (near max_new_tokens) or instant-EOS outputs and re-roll the
-     *  seed up to 2 times. Returns raw PCM (s16 mono 24 kHz) or null. */
-    private fun generatePlausible(chunk: String, voicePath: String): ByteArray? {
+     *  runaway (near max_new_tokens), self-repeating (way over the expected
+     *  duration for the text), or instant-EOS outputs and re-roll the seed up
+     *  to 2 times. Returns raw PCM (s16 mono 24 kHz) or null. */
+    private fun generatePlausible(chunk: String, voicePath: String, onFrames: (Int, Int) -> Unit): ByteArray? {
         val expectSecs = chunk.length / 16.0
         val maxFrames = ((expectSecs * 12.5 * 2.2).toInt() + 64).coerceIn(128, 2048)
         for (attempt in 0 until 3) {
@@ -210,7 +265,7 @@ class TtsService : Service() {
                 chunk, voicePath, "en", maxFrames, seed, 0.8f, 0.95f,
                 object : TtsEngine.ProgressCallback {
                     override fun onProgress(framesDone: Int, framesMax: Int) {
-                        broadcastThrottled("frames", framesDone, framesMax)
+                        onFrames(framesDone, framesMax)
                     }
                 })
             if (wav == null) {
@@ -224,7 +279,9 @@ class TtsService : Service() {
             }
             val secs = pcm.size / 2.0 / SAMPLE_RATE
             val tooShort = secs < minOf(3.0, chunk.length / 40.0)
-            val runaway = secs >= 0.95 * (maxFrames / 12.5)
+            // 2x expected + 1s catches the model reading the text twice (seen
+            // on-device: 12.6s for an 82-char sentence) well before the cap
+            val runaway = secs >= 0.95 * (maxFrames / 12.5) || secs > expectSecs * 2.0 + 1.0
             if (!tooShort && !runaway) return pcm
             DebugLog.log(this, "TtsService", "implausible chunk (${"%.1f".format(secs)}s for ${chunk.length} chars, seed $seed), re-rolling")
         }
@@ -321,13 +378,6 @@ class TtsService : Service() {
     }
 
     private var lastFramesBroadcast = 0L
-    private fun broadcastThrottled(state: String, a: Int, b: Int) {
-        val now = System.currentTimeMillis()
-        if (now - lastFramesBroadcast > 500) {
-            lastFramesBroadcast = now
-            broadcast(state, a, b, "")
-        }
-    }
 
     private fun broadcast(state: String, chunk: Int, total: Int, message: String) {
         sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)

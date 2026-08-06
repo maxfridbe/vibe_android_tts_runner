@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     private lateinit var modelGroup: RadioGroup
     private lateinit var voicesGroup: RadioGroup
     private lateinit var runStatus: TextView
+    private lateinit var runProgress: ProgressBar
     private var downloading = false
 
     private val statusReceiver = object : BroadcastReceiver() {
@@ -40,14 +41,20 @@ class MainActivity : Activity() {
             val chunk = intent.getIntExtra("chunk", 0)
             val total = intent.getIntExtra("total", 0)
             val message = intent.getStringExtra("message") ?: ""
+            val permille = intent.getIntExtra("permille", -1)
+            if (permille >= 0) runProgress.progress = permille
             runStatus.text = when (state) {
-                "loading" -> "Loading model…"
-                "generating" -> "Generating chunk ${chunk + 1}/$total: “$message…”"
+                "loading" -> { runProgress.progress = 0; "Loading model…" }
+                "generating" -> {
+                    if (total > 0) runProgress.progress = chunk * 1000 / total
+                    "Generating chunk ${chunk + 1}/$total: “$message…”"
+                }
                 "frames" -> "Generating… ${"%.1f".format(chunk / 12.5)} s of audio"
-                "done" -> "Done ($total chunks)"
-                "stopped" -> "Stopped"
+                "done" -> { runProgress.progress = 1000; "Done ($total chunks)" }
+                "saved" -> { runProgress.progress = 1000; "Saved to $message" }
+                "stopped" -> { runProgress.progress = 0; "Stopped" }
                 "note" -> message
-                "error" -> "Error: $message"
+                "error" -> { runProgress.progress = 0; "Error: $message" }
                 else -> state ?: ""
             }
         }
@@ -129,22 +136,28 @@ class MainActivity : Activity() {
             minLines = 2
         }
         root.addView(tryText)
+        fun startJob(save: Boolean) {
+            val v = selectedVoice()
+            if (v == null) { toast("Import a voice first"); return }
+            if (ModelManager.selectedModel(this) == null) { toast("Download a model first"); return }
+            VoiceStore.setDefault(this, v)
+            startForegroundService(
+                Intent(this, TtsService::class.java)
+                    .setAction(TtsService.ACTION_SPEAK)
+                    .putExtra(TtsService.EXTRA_TEXT, tryText.text.toString())
+                    .putExtra(TtsService.EXTRA_TITLE, if (save) "TTS ${tryText.text.take(24)}" else "Test")
+                    .putExtra(TtsService.EXTRA_VOICE, v.name)
+                    .putExtra(TtsService.EXTRA_BACKEND, prefs.getString("backend", "cpu"))
+                    .putExtra(TtsService.EXTRA_SAVE, save))
+        }
         val runButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         runButtons.addView(Button(this).apply {
             text = "Speak"
-            setOnClickListener {
-                val v = selectedVoice()
-                if (v == null) { toast("Import a voice first"); return@setOnClickListener }
-                if (ModelManager.selectedModel(this@MainActivity) == null) { toast("Download a model first"); return@setOnClickListener }
-                VoiceStore.setDefault(this@MainActivity, v)
-                startForegroundService(
-                    Intent(this@MainActivity, TtsService::class.java)
-                        .setAction(TtsService.ACTION_SPEAK)
-                        .putExtra(TtsService.EXTRA_TEXT, tryText.text.toString())
-                        .putExtra(TtsService.EXTRA_TITLE, "Test")
-                        .putExtra(TtsService.EXTRA_VOICE, v.name)
-                        .putExtra(TtsService.EXTRA_BACKEND, prefs.getString("backend", "cpu")))
-            }
+            setOnClickListener { startJob(false) }
+        })
+        runButtons.addView(Button(this).apply {
+            text = "Save audio"
+            setOnClickListener { startJob(true) }
         })
         runButtons.addView(Button(this).apply {
             text = "Stop"
@@ -155,6 +168,8 @@ class MainActivity : Activity() {
         root.addView(runButtons)
         runStatus = TextView(this)
         root.addView(runStatus)
+        runProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        root.addView(runProgress)
 
         header("5 · Debug")
         val statusText = TextView(this).apply { textSize = 12f; setTypeface(android.graphics.Typeface.MONOSPACE) }
