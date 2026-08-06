@@ -58,12 +58,12 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *, void *) {
     return JNI_VERSION_1_6;
 }
 
-// backend: "cpu" keeps everything on the CPU; "gpu" offloads talker layers and
-// the codec to whichever compute backend ggml brings up (OpenCL on Adreno,
-// else Vulkan), with automatic per-op CPU fallback.
+// backend: "cpu" keeps everything on the CPU; "gpu" offloads the talker
+// layers to OpenCL (Adreno). The codec ("mmproj") always runs on CPU: the
+// Adreno OpenCL kernels abort on its graph (they cover LLM shapes only).
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
-        jstring jmodel, jstring jmmproj, jstring jbackend, jint nThreads) {
+        jstring jmodel, jstring jmmproj, jstring jbackend, jint nThreads) try {
     g_engine.reset();
     g_last_error.clear();
 
@@ -79,13 +79,8 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     params.warmup      = false;
 
     const std::string backend = jstr(env, jbackend);
-    if (backend == "cpu") {
-        params.n_gpu_layers   = 0;
-        params.mmproj_use_gpu = false;
-    } else {
-        params.n_gpu_layers   = 999;
-        params.mmproj_use_gpu = true;
-    }
+    params.n_gpu_layers   = backend == "cpu" ? 0 : 999;
+    params.mmproj_use_gpu = false;  // codec on CPU always, see nLoad comment
 
     common_init();
     llama_backend_init();
@@ -125,6 +120,18 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     LOGI("engine loaded in %.1fs (backend=%s threads=%d)",
          (ggml_time_us() - t_load_start) / 1e6, backend.c_str(), params.cpuparams.n_threads);
     return JNI_TRUE;
+} catch (const std::exception & e) {
+    // llama.cpp and driver wrappers throw (e.g. vk::SystemError on Adreno);
+    // surface as a load failure the Kotlin side can fall back from
+    g_engine.reset();
+    g_last_error = std::string("native exception during load: ") + e.what();
+    LOGE("%s", g_last_error.c_str());
+    return JNI_FALSE;
+} catch (...) {
+    g_engine.reset();
+    g_last_error = "unknown native exception during load";
+    LOGE("%s", g_last_error.c_str());
+    return JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -175,7 +182,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         jstring jtext, jstring jspeaker, jstring jlang,
-        jint maxFrames, jint seed, jfloat temp, jfloat topP, jobject progressCb) {
+        jint maxFrames, jint seed, jfloat temp, jfloat topP, jobject progressCb) try {
     if (!g_engine) {
         g_last_error = "engine not loaded";
         return nullptr;
@@ -296,4 +303,16 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
     if (!out) return nullptr;
     env->SetByteArrayRegion(out, 0, (jsize) data_len, (const jbyte *) data);
     return out;
+} catch (const std::exception & e) {
+    // engine state is suspect after a backend blew up mid-graph — drop it so
+    // the next ensureLoaded starts clean (Kotlin retries the chunk on CPU)
+    g_engine.reset();
+    g_last_error = std::string("native exception during generate: ") + e.what();
+    LOGE("%s", g_last_error.c_str());
+    return nullptr;
+} catch (...) {
+    g_engine.reset();
+    g_last_error = "unknown native exception during generate";
+    LOGE("%s", g_last_error.c_str());
+    return nullptr;
 }

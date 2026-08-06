@@ -1,19 +1,20 @@
 cmake_minimum_required(VERSION 3.22)
 project(ttsrunner_jni CXX C)
 
-# llama.cpp build knobs: CPU always; Vulkan + OpenCL compute backends are
-# compiled in and picked at runtime (ggml's scheduler falls back per-op to
-# CPU when a GPU backend lacks an operation).
+# llama.cpp build knobs: CPU always; OpenCL is the GPU backend.
+# On-device findings (SD 8 Gen 2 / Adreno 740):
+#  - Vulkan: the proprietary Adreno Vulkan driver fails to compile llama.cpp's
+#    compute shaders at all (vk::Device::createComputePipeline: ErrorUnknown
+#    during the first talker decode), so it is compiled out.
+#  - OpenCL: Qualcomm's Adreno kernels handle the talker LLM fine but SIGABRT
+#    inside ggml_cl_compute_forward on the codec ("mmproj") graph — so the JNI
+#    layer keeps the codec on CPU (mmproj_use_gpu=false) and only offloads the
+#    talker layers.
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-# OpenCL stays off: the Adreno OpenCL backend SIGABRTs inside
-# ggml_cl_compute_forward on the TTS codec graph (seen on SD 8 Gen 2 /
-# Adreno 740 — its kernels cover LLM shapes, not this model's codec ops),
-# and because it registers as a type-GPU device it would always win the
-# backend pick over Vulkan. Vulkan (with our get_rows patches) is the GPU path.
-set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_OPENCL ON CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -48,8 +49,9 @@ if(EXISTS "/usr/local/share/cmake/SPIRV-Headers")
     set(SPIRV-Headers_DIR "/usr/local/share/cmake/SPIRV-Headers" CACHE PATH "" FORCE)
 endif()
 
-# OpenCL support files (opencl-headers/, opencl-stub/) are kept in the tree
-# for a future retry once upstream's Adreno kernels cover the codec ops.
+# OpenCL headers + dlopen stub: links against the stub at build time, loads
+# the vendor libOpenCL.so at runtime (absent on non-Qualcomm devices, where
+# ggml then simply reports no GPU and everything runs on CPU).
 if(GGML_OPENCL)
     set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
     set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)

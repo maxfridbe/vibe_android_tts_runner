@@ -16,9 +16,8 @@ containerized build system is unchanged: the host needs only podman/docker.
 adb install -r output/tts-runner/tts-runner-*-debug.apk
 ```
 
-First build is slow: the builder image fetches the Android SDK/NDK, a pinned
-llama.cpp, Vulkan headers, and a current LunarG `glslc`, then compiles
-llama.cpp (CPU + Vulkan + OpenCL backends) for arm64.
+First build is slow: the builder image fetches the Android SDK/NDK and a
+pinned llama.cpp, then compiles llama.cpp (CPU + OpenCL backends) for arm64.
 
 ## Using it
 
@@ -39,7 +38,7 @@ citations are stripped before speaking.
 ```
 apps/tts-runner/
 ├── app/src/main/cpp/
-│   ├── CMakeLists.txt      # llama.cpp (CPU+Vulkan+OpenCL, Adreno kernels)
+│   ├── CMakeLists.txt      # llama.cpp (CPU + OpenCL w/ Adreno kernels)
 │   ├── tts_jni.cpp         # persistent engine: load once, WAV per utterance
 │   ├── android_posix_shim.h, opencl-headers/, opencl-stub/
 │   │                       # from android_builder/diffusion: posix_madvise
@@ -76,11 +75,20 @@ desktop RTX 5070, 2026-08-05) that upstream does not have yet:
   views.
 
 With both patches, desktop results for the 1.7B Q8 model: CPU (8 threads)
-RTF ≈ 1.25, Vulkan RTF ≈ 0.86. On-phone expectations: CPU on a big-core
-arm64 with Q4_K_M should be near real time; **GPU is exposed as
-"experimental"** — the OpenCL Adreno backend and mobile Vulkan drivers are
-untested against this model's codec graph, but ggml falls back per-op to the
-(fixed) CPU path.
+RTF ≈ 1.25, Vulkan RTF ≈ 0.86.
+
+On-phone findings (Galaxy Z Fold5, SD 8 Gen 2 / Adreno 740, Android 16):
+
+- **Adreno Vulkan driver**: cannot compile llama.cpp's compute shaders at
+  all (`vk::Device::createComputePipeline: ErrorUnknown` on the first talker
+  decode) — the Vulkan backend is compiled out of the Android build.
+- **Adreno OpenCL**: Qualcomm's kernels run the talker LLM but SIGABRT on
+  the codec graph, so "GPU (experimental)" mode offloads **talker layers
+  only**; the codec always runs on CPU (`mmproj_use_gpu=false`).
+- Native C++ exceptions from a backend are caught at the JNI boundary and
+  the chunk is retried on CPU in-process; a hard native abort kills the
+  `:engine` process, and a crash-marker file makes the next run start on
+  CPU automatically.
 
 Peak memory for 1.7B Q4_K_M + Q8 mmproj is ~2.5–3 GB — comfortably inside an
 8 GB phone. A 0.6B variant would halve that, but nobody has published a 0.6B

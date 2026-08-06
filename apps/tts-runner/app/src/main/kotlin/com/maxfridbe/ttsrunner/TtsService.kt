@@ -139,7 +139,16 @@ class TtsService : Service() {
         DebugLog.log(this, "TtsService", "model=${model.id} voice=${voice.file.name} (${voice.file.length()} b)")
 
         if (!ensureLoaded(model, backend)) {
-            fail("Model load failed: ${TtsEngine.nLastError()}"); return
+            if (backend == "cpu") {
+                fail("Model load failed: ${TtsEngine.nLastError()}"); return
+            }
+            DebugLog.log(this, "TtsService", "GPU load failed (${TtsEngine.nLastError()}); falling back to cpu")
+            broadcast("note", 0, 0, "GPU init failed — using CPU")
+            backend = "cpu"
+            marker.writeText(backend)
+            if (!ensureLoaded(model, backend)) {
+                fail("Model load failed: ${TtsEngine.nLastError()}"); return
+            }
         }
 
         val chunks = Chunker.split(text)
@@ -155,7 +164,19 @@ class TtsService : Service() {
             update(notif(title, "Chunk ${i + 1}/${chunks.size}", i, chunks.size))
             broadcast("generating", i, chunks.size, chunk.take(80))
             val t0 = System.currentTimeMillis()
-            val pcm = generatePlausible(chunk, voice.file.absolutePath)
+            var pcm = generatePlausible(chunk, voice.file.absolutePath)
+            if (pcm == null && !stopRequested && backend != "cpu") {
+                // a caught native exception drops the engine; retry this chunk
+                // on CPU in-process instead of dying and using the marker path
+                DebugLog.log(this, "TtsService", "GPU generation failed (${TtsEngine.nLastError()}); retrying chunk on CPU")
+                broadcast("note", 0, 0, "GPU generation failed — switching to CPU")
+                backend = "cpu"
+                marker.writeText(backend)
+                loadedKey = null
+                if (ensureLoaded(model, backend)) {
+                    pcm = generatePlausible(chunk, voice.file.absolutePath)
+                }
+            }
             if (pcm == null) {
                 if (!stopRequested) failed = TtsEngine.nLastError().ifBlank { "generation failed" }
                 DebugLog.log(this, "TtsService", "chunk ${i + 1} FAILED after ${System.currentTimeMillis() - t0} ms: $failed")
