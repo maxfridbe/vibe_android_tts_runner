@@ -15,9 +15,11 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -27,27 +29,30 @@ import com.google.android.material.card.MaterialCardView
 import com.google.android.material.color.DynamicColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.navigationrail.NavigationRailView
+import java.io.File
 import kotlin.concurrent.thread
+import kotlin.random.Random
 
-/** Tabbed UI in the audiobook-maker mold: Listen / Voices / Jobs / Settings.
- *  One programmatic layout, responsive: bottom navigation on phones, a
- *  navigation rail on tablets and the unfolded Fold (width >= 600dp). */
+/** Tabbed UI in the audiobook-maker mold: New job / Voices / Jobs / Settings.
+ *  Bottom navigation on phones, navigation rail on tablets and the unfolded
+ *  Fold (width >= 600dp). A live memory meter sits top-right. */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var content: FrameLayout
+    private lateinit var memMeter: TextView
     private val tabs = mutableMapOf<Int, View>()
-    private var currentTab = TAB_LISTEN
+    private var currentTab = TAB_NEWJOB
 
-    // Listen tab widgets (referenced from the status receiver)
+    // New job tab widgets (referenced from the status receiver)
     private lateinit var runStatus: TextView
     private lateinit var runProgress: ProgressBar
     private lateinit var etaText: TextView
-    private lateinit var statsText: TextView
-    private lateinit var waveform: WaveformView
-    private lateinit var playBtn: Button
-    private lateinit var voiceLabel: TextView
+    private lateinit var jobText: EditText
+    private lateinit var voicePickBtn: Button
+    private var pickedVoice: String? = null
+    private var pickedSave = false
+
     private var player: android.media.MediaPlayer? = null
-    private var previewPlayer: android.media.MediaPlayer? = null
     private val ui = android.os.Handler(android.os.Looper.getMainLooper())
 
     private val engineConn = object : android.content.ServiceConnection {
@@ -79,8 +84,9 @@ class MainActivity : AppCompatActivity() {
                 "frames" ->
                     if (chunk == 0) "Processing text & voice…"
                     else "Generating… ${"%.1f".format(chunk / 12.5)} s of audio"
-                "done" -> { finishUi(); statsText.text = message; "Done" }
-                "saved" -> { finishUi(); statsText.text = message; "Saved" }
+                "done" -> { finishUi(); "Done — $message" }
+                "saved" -> { finishUi(); "Saved — $message" }
+                "designed" -> { finishUi(); offerKeepDesignedVoice(); "Voice rolled" }
                 "stopped" -> { runProgress.progress = 0; etaText.text = ""; "Stopped" }
                 "note" -> message
                 "error" -> { runProgress.progress = 0; etaText.text = ""; "Error: $message" }
@@ -92,8 +98,8 @@ class MainActivity : AppCompatActivity() {
     private fun finishUi() {
         runProgress.progress = 1000
         etaText.text = ""
-        refreshPlayer()
-        (tabs[TAB_JOBS] as? ViewGroup)?.let { rebuildJobs() }
+        if (tabs.containsKey(TAB_JOBS)) rebuildJobs()
+        if (tabs.containsKey(TAB_VOICES)) rebuildVoices()
     }
 
     // ---- activity ----------------------------------------------------------
@@ -101,7 +107,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         DynamicColors.applyToActivityIfAvailable(this)
-        currentTab = savedInstanceState?.getInt("tab") ?: TAB_LISTEN
+        currentTab = savedInstanceState?.getInt("tab") ?: TAB_NEWJOB
 
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
@@ -110,10 +116,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         content = FrameLayout(this)
-        val wide = resources.configuration.screenWidthDp >= 600
+        memMeter = TextView(this).apply {
+            textSize = 11f; alpha = 0.6f
+            setPadding(dp(8), dp(6), dp(12), dp(4))
+        }
+        val contentWithMeter = FrameLayout(this).apply {
+            addView(content)
+            addView(memMeter, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.END))
+        }
 
+        val wide = resources.configuration.screenWidthDp >= 600
         val navItems = { menu: Menu ->
-            menu.add(0, TAB_LISTEN, 0, "Listen").setIcon(android.R.drawable.ic_media_play)
+            menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(android.R.drawable.ic_input_add)
             menu.add(0, TAB_VOICES, 1, "Voices").setIcon(android.R.drawable.ic_btn_speak_now)
             menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(android.R.drawable.ic_menu_recent_history)
             menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(android.R.drawable.ic_menu_preferences)
@@ -128,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 addView(rail, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                addView(content, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(contentWithMeter, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             }
         } else {
             val bottom = BottomNavigationView(this)
@@ -137,7 +153,7 @@ class MainActivity : AppCompatActivity() {
             bottom.selectedItemId = currentTab
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                addView(content, LinearLayout.LayoutParams(
+                addView(contentWithMeter, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
                 addView(bottom, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -154,9 +170,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTab(id: Int) {
         currentTab = id
+        if (id == TAB_SETTINGS) tabs.remove(id)  // rebuilt each visit (battery button state etc.)
         val v = tabs.getOrPut(id) {
             when (id) {
-                TAB_LISTEN -> buildListenTab()
+                TAB_NEWJOB -> buildNewJobTab()
                 TAB_VOICES -> buildVoicesTab()
                 TAB_JOBS -> buildJobsTab()
                 else -> buildSettingsTab()
@@ -165,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         when (id) {
             TAB_VOICES -> rebuildVoices()
             TAB_JOBS -> rebuildJobs()
-            TAB_LISTEN -> { refreshVoiceLabel(); refreshPlayer() }
+            TAB_NEWJOB -> refreshVoiceLabel()
         }
         content.removeAllViews()
         content.addView(v)
@@ -182,20 +199,42 @@ class MainActivity : AppCompatActivity() {
         runCatching { unbindService(engineConn) }
     }
 
+    private val memTicker = object : Runnable {
+        override fun run() {
+            thread {
+                val text = runCatching {
+                    val am = getSystemService(android.app.ActivityManager::class.java)
+                    val mi = android.app.ActivityManager.MemoryInfo()
+                    am.getMemoryInfo(mi)
+                    val enginePid = am.runningAppProcesses?.find { it.processName.endsWith(":engine") }?.pid
+                    val engineMb = enginePid?.let { pid ->
+                        File("/proc/$pid/status").readLines()
+                            .firstOrNull { it.startsWith("VmRSS") }
+                            ?.filter { it.isDigit() }?.toLongOrNull()?.div(1024)
+                    }
+                    (if (engineMb != null) "engine ${"%.1f".format(engineMb / 1024.0)} GB · " else "engine idle · ") +
+                        "free ${"%.1f".format(mi.availMem / 1073741824.0)} GB"
+                }.getOrDefault("")
+                runOnUiThread { memMeter.text = text }
+            }
+            ui.postDelayed(this, 2500)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         registerReceiver(statusReceiver, IntentFilter(TtsService.STATUS_BROADCAST), RECEIVER_NOT_EXPORTED)
-        if (::playBtn.isInitialized) refreshPlayer()
+        ui.post(memTicker)
     }
 
     override fun onPause() {
         super.onPause()
         unregisterReceiver(statusReceiver)
+        ui.removeCallbacks(memTicker)
     }
 
     override fun onDestroy() {
         player?.release(); player = null
-        previewPlayer?.release(); previewPlayer = null
         super.onDestroy()
     }
 
@@ -236,137 +275,122 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buttonRow(vararg buttons: Pair<String, () -> Unit>): LinearLayout =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            for ((label, action) in buttons) {
-                addView(Button(context).apply {
-                    text = label
-                    setOnClickListener { action() }
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    .apply { marginEnd = dp(6) })
-            }
-        }
+    private fun iconBtn(icon: Int, desc: String, action: () -> Unit) = ImageButton(this).apply {
+        setImageResource(icon)
+        contentDescription = desc
+        background = null
+        setOnClickListener { action() }
+    }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
 
-    // ---- Listen tab --------------------------------------------------------
+    private fun currentModelId() = ModelManager.selectedModel(this)?.id ?: "none"
+    private fun prefs() = getSharedPreferences("ttsrunner", MODE_PRIVATE)
 
-    private lateinit var tryText: EditText
+    // ---- New job tab -------------------------------------------------------
 
-    private fun buildListenTab(): View {
+    private fun buildNewJobTab(): View {
         val (scroll, col) = page()
-        col.title("Listen")
-        col.caption("Share text or a link from any app — or paste here. v${BuildConfig.VERSION_NAME}")
+        col.title("New TTS job")
+        col.caption("Or share text / an article link to TTS Runner from any app.")
 
         col.addView(card {
-            tryText = EditText(context).apply {
+            jobText = EditText(context).apply {
                 setText("The quick brown fox jumps over the lazy dog, then reads the entire internet aloud.")
                 minLines = 3
                 background = null
                 hint = "Text to read"
             }
-            addView(tryText)
-            voiceLabel = TextView(context).apply { textSize = 13f; alpha = 0.7f; setPadding(0, dp(4), 0, dp(8)) }
-            addView(voiceLabel)
-            addView(buttonRow(
-                "Speak" to { startTtsJob(tryText.text.toString(), "Test", save = false) },
-                "Save audio" to { startTtsJob(tryText.text.toString(), "TTS " + tryText.text.take(24), save = true) },
-                "Stop" to { startService(Intent(this@MainActivity, TtsService::class.java).setAction(TtsService.ACTION_STOP)) },
-            ))
+            addView(jobText)
+
+            val optionsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            voicePickBtn = Button(context).apply { setOnClickListener { pickVoiceDialog() } }
+            optionsRow.addView(voicePickBtn)
+            val modeGroup = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
+            modeGroup.addView(RadioButton(context).apply { text = "Listen"; id = 1; isChecked = true })
+            modeGroup.addView(RadioButton(context).apply { text = "Save file"; id = 2 })
+            modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == 2 }
+            optionsRow.addView(modeGroup, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
+            addView(optionsRow)
+
+            val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(Button(context).apply {
+                text = "Add job"
+                setOnClickListener {
+                    val text = jobText.text.toString()
+                    if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
+                    startTtsJob(text, if (pickedSave) "TTS " + text.take(24) else "TTS job",
+                        save = pickedSave, voiceName = pickedVoice)
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            actions.addView(Button(context).apply {
+                text = "Stop"
+                setOnClickListener {
+                    startService(Intent(this@MainActivity, TtsService::class.java).setAction(TtsService.ACTION_STOP))
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+            addView(actions)
         })
 
         col.addView(card {
-            runStatus = TextView(context)
+            runStatus = TextView(context).apply { text = "Idle" }
             addView(runStatus)
             runProgress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
             addView(runProgress)
             etaText = TextView(context).apply { textSize = 13f; alpha = 0.7f }
             addView(etaText)
-            statsText = TextView(context).apply { textSize = 13f; alpha = 0.7f }
-            addView(statsText)
-
-            val playerRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            playBtn = Button(context).apply { text = "▶"; setOnClickListener { togglePlayback() } }
-            playerRow.addView(playBtn)
-            waveform = WaveformView(context).apply {
-                onSeek = { frac -> player?.let { it.seekTo((it.duration * frac).toInt()) } }
-            }
-            playerRow.addView(waveform, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
-            playerRow.addView(Button(context).apply {
-                text = "Share"
-                setOnClickListener {
-                    val f = lastAudio()
-                    if (!f.exists() || f.length() <= 44) { toast("No audio yet"); return@setOnClickListener }
-                    thread {
-                        runCatching { AudioShare.shareWavAsM4a(this@MainActivity, f, "TTS audio") }
-                            .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
-                    }
-                }
-            })
-            addView(playerRow)
         })
         return scroll
     }
 
     private fun refreshVoiceLabel() {
-        if (!::voiceLabel.isInitialized) return
-        val v = VoiceStore.defaultVoice(this)
-        val m = ModelManager.selectedModel(this)
-        val backend = getSharedPreferences("ttsrunner", MODE_PRIVATE).getString("backend", "cpu")
-        voiceLabel.text = "Voice: ${v?.name ?: "none"} · Model: ${m?.id ?: "none"} · ${backend?.uppercase()}"
+        if (!::voicePickBtn.isInitialized) return
+        val name = pickedVoice ?: VoiceStore.defaultVoice(this)?.name ?: "none"
+        voicePickBtn.text = "Voice: $name ▾"
+    }
+
+    private fun pickVoiceDialog() {
+        val names = VoiceStore.list(this).map { it.name }
+        if (names.isEmpty()) { toast("Import or design a voice first (Voices tab)"); return }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Voice for this job")
+            .setItems(names.toTypedArray()) { _, which ->
+                pickedVoice = names[which]
+                refreshVoiceLabel()
+            }
+            .show()
     }
 
     private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null) {
         val v = voiceName?.let { n -> VoiceStore.list(this).find { it.name == n } } ?: VoiceStore.defaultVoice(this)
-        if (v == null) { toast("Import a voice first (Voices tab)"); return }
+        if (v == null) { toast("Import or design a voice first (Voices tab)"); return }
         if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, text)
             .putExtra(TtsService.EXTRA_TITLE, title)
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, getSharedPreferences("ttsrunner", MODE_PRIVATE).getString("backend", "cpu"))
+            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
             .putExtra(TtsService.EXTRA_SAVE, save))
     }
 
-    // ---- last-audio player -------------------------------------------------
+    // ---- audio playback helpers -------------------------------------------
 
-    private fun lastAudio() = java.io.File(filesDir, "last_audio.wav")
+    private fun lastAudio() = File(filesDir, "last_audio.wav")
 
-    private fun refreshPlayer() {
-        if (!::playBtn.isInitialized) return
-        val f = lastAudio()
-        val visible = f.exists() && f.length() > 44
-        playBtn.isEnabled = visible
-        if (visible) thread { waveform.loadWav(f) }
-    }
+    private fun playFile(path: String) = playSource { it.setDataSource(path) }
+    private fun playUri(uri: Uri) = playSource { it.setDataSource(this, uri) }
 
-    private val progressTicker = object : Runnable {
-        override fun run() {
-            val p = player ?: return
-            if (p.isPlaying) {
-                if (p.duration > 0) waveform.setProgress(p.currentPosition / p.duration.toFloat())
-                ui.postDelayed(this, 200)
-            }
-        }
-    }
-
-    private fun togglePlayback() {
-        val p = player
-        if (p != null && p.isPlaying) { p.pause(); playBtn.text = "▶"; return }
-        if (p != null) { p.start(); playBtn.text = "❚❚"; ui.post(progressTicker); return }
+    private fun playSource(set: (android.media.MediaPlayer) -> Unit) {
+        player?.release(); player = null
         try {
             player = android.media.MediaPlayer().apply {
-                setDataSource(lastAudio().absolutePath)
+                set(this)
                 prepare()
-                setOnCompletionListener {
-                    playBtn.text = "▶"; waveform.setProgress(1f); it.release(); player = null
-                }
+                setOnCompletionListener { it.release(); player = null }
                 start()
             }
-            playBtn.text = "❚❚"
-            ui.post(progressTicker)
         } catch (e: Exception) {
             toast("Playback failed: ${e.message}")
             player?.release(); player = null
@@ -380,16 +404,22 @@ class MainActivity : AppCompatActivity() {
     private fun buildVoicesTab(): View {
         val (scroll, col) = page()
         col.title("Voices")
-        col.caption("A voice is 10–20 s of clean speech from one speaker. Previews are generated once and cached.")
-        col.addView(Button(this).apply {
-            text = "Import voice"
+        col.caption("A voice is 10–20 s of clean speech. Previews are generated once per model and cached.")
+        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        topRow.addView(Button(this).apply {
+            text = "Import"
             setOnClickListener {
                 startActivityForResult(
                     Intent(Intent.ACTION_OPEN_DOCUMENT)
                         .addCategory(Intent.CATEGORY_OPENABLE)
                         .setType("audio/*"), REQ_IMPORT)
             }
-        })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        topRow.addView(Button(this).apply {
+            text = "Design new voice"
+            setOnClickListener { designVoiceDialog() }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+        col.addView(topRow)
         voicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, 0) }
         col.addView(voicesList)
         return scroll
@@ -399,6 +429,7 @@ class MainActivity : AppCompatActivity() {
         if (!::voicesList.isInitialized) return
         voicesList.removeAllViews()
         val def = VoiceStore.defaultVoice(this)
+        val modelId = currentModelId()
         for (v in VoiceStore.list(this)) {
             voicesList.addView(card {
                 val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -412,60 +443,127 @@ class MainActivity : AppCompatActivity() {
                 head.addView(TextView(context).apply {
                     text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                head.addView(TextView(context).apply {
-                    text = "${v.file.length() / 1024} KB"; textSize = 12f; alpha = 0.6f
+                val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
+                head.addView(iconBtn(android.R.drawable.ic_media_play,
+                    if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v) })
+                head.addView(iconBtn(android.R.drawable.ic_menu_share, "Share preview") {
+                    val p = VoiceStore.previewFile(this@MainActivity, v.name, modelId)
+                    if (!p.exists()) toast("Generate a preview first (▶)")
+                    else thread {
+                        runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice ${v.name}") }
+                            .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
+                    }
+                })
+                head.addView(iconBtn(android.R.drawable.ic_menu_edit, "Transcript") { transcriptDialog(v) })
+                head.addView(iconBtn(android.R.drawable.ic_menu_delete, "Delete") {
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setMessage("Delete voice “${v.name}”?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            VoiceStore.delete(this@MainActivity, v); rebuildVoices()
+                        }
+                        .setNegativeButton("Cancel", null).show()
                 })
                 addView(head)
-                val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name).exists()
-                addView(buttonRow(
-                    (if (hasPreview) "▶ Preview" else "Make preview") to { previewVoice(v) },
-                    "Share" to {
-                        val p = VoiceStore.previewFile(this@MainActivity, v.name)
-                        if (!p.exists()) toast("Make a preview first")
-                        else thread {
-                            runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice preview ${v.name}") }
-                                .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
-                        }
-                    },
-                    "Delete" to {
-                        MaterialAlertDialogBuilder(this@MainActivity)
-                            .setMessage("Delete voice “${v.name}”?")
-                            .setPositiveButton("Delete") { _, _ ->
-                                VoiceStore.delete(this@MainActivity, v); rebuildVoices()
-                            }
-                            .setNegativeButton("Cancel", null).show()
-                    },
-                ))
+                val bits = mutableListOf("${v.file.length() / 1024} KB")
+                if (!hasPreview) bits.add("no preview for $modelId yet")
+                if (VoiceStore.transcriptFile(this@MainActivity, v.name).exists()) bits.add("transcript ✓")
+                addView(TextView(context).apply { text = bits.joinToString(" · "); textSize = 12f; alpha = 0.6f })
             })
         }
         if (voicesList.childCount == 0) {
-            voicesList.addView(TextView(this).apply { text = "No voices yet — import one above."; alpha = 0.6f })
+            voicesList.addView(TextView(this).apply {
+                text = "No voices yet — import a recording or design one."; alpha = 0.6f
+            })
         }
     }
 
     private fun previewVoice(v: VoiceStore.Voice) {
-        val cached = VoiceStore.previewFile(this, v.name)
-        if (cached.exists()) {
-            previewPlayer?.release()
-            try {
-                previewPlayer = android.media.MediaPlayer().apply {
-                    setDataSource(cached.absolutePath)
-                    prepare()
-                    setOnCompletionListener { it.release(); previewPlayer = null }
-                    start()
-                }
-            } catch (e: Exception) { toast("Preview failed: ${e.message}") }
-            return
-        }
+        val cached = VoiceStore.previewFile(this, v.name, currentModelId())
+        if (cached.exists()) { playFile(cached.absolutePath); return }
         if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
-        toast("Generating preview — it will play when ready and be cached")
+        toast("Generating preview with ${currentModelId()} — plays when ready, then cached")
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, VoiceStore.PREVIEW_TEXT)
             .putExtra(TtsService.EXTRA_TITLE, "Preview: ${v.name}")
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, getSharedPreferences("ttsrunner", MODE_PRIVATE).getString("backend", "cpu"))
+            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
             .putExtra(TtsService.EXTRA_PREVIEW, true))
+    }
+
+    /** Editable transcript of the reference audio — manual for now; the slot
+     *  a future on-device whisper would pre-fill for the user to validate. */
+    private fun transcriptDialog(v: VoiceStore.Voice) {
+        val f = VoiceStore.transcriptFile(this, v.name)
+        val edit = EditText(this).apply {
+            setText(if (f.exists()) f.readText() else "")
+            hint = "What is said in the reference recording"
+            minLines = 3
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Transcript — ${v.name}")
+            .setView(edit)
+            .setPositiveButton("Save") { _, _ ->
+                val t = edit.text.toString().trim()
+                if (t.isBlank()) f.delete() else f.writeText(t)
+                rebuildVoices()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---- voice designer ----------------------------------------------------
+
+    private var designing = false
+
+    private fun designVoiceDialog() {
+        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Design a voice")
+            .setMessage("Rolls a brand-new random voice (no reference audio). Listen, keep it if you " +
+                "like it, or roll again. Kept voices are tied to no model — they become normal " +
+                "reference audio you can use anywhere.")
+            .setPositiveButton("Roll a voice") { _, _ -> rollDesignVoice() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun rollDesignVoice() {
+        designing = true
+        startForegroundService(Intent(this, TtsService::class.java)
+            .setAction(TtsService.ACTION_SPEAK)
+            .putExtra(TtsService.EXTRA_TEXT, VoiceStore.DESIGN_TEXT)
+            .putExtra(TtsService.EXTRA_TITLE, "Designing voice")
+            .putExtra(TtsService.EXTRA_VOICE, "")
+            .putExtra(TtsService.EXTRA_DESIGN, true)
+            .putExtra(TtsService.EXTRA_SEED, Random.nextInt(1, 1 shl 30))
+            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu")))
+        toast("Rolling a new voice…")
+    }
+
+    private fun offerKeepDesignedVoice() {
+        if (!designing) return
+        designing = false
+        val edit = EditText(this).apply {
+            hint = "Voice name"
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Keep this voice?")
+            .setView(edit)
+            .setPositiveButton("Keep") { _, _ ->
+                val name = edit.text.toString().ifBlank { "designed" }
+                try {
+                    val v = VoiceStore.adopt(this, lastAudio(), name)
+                    lastAudio().copyTo(VoiceStore.previewFile(this, v.name, currentModelId()), overwrite = true)
+                    rebuildVoices()
+                    toast("Voice “${v.name}” saved")
+                } catch (e: Exception) { toast("Keep failed: ${e.message}") }
+            }
+            .setNeutralButton("Roll again") { _, _ -> rollDesignVoice() }
+            .setNegativeButton("Discard", null)
+            .show()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -489,12 +587,34 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var jobsList: LinearLayout
     private lateinit var jobsSummary: TextView
+    private lateinit var waveform: WaveformView
 
     private fun buildJobsTab(): View {
         val (scroll, col) = page()
         col.title("Jobs")
         jobsSummary = TextView(this).apply { textSize = 13f; alpha = 0.7f; setPadding(0, 0, 0, dp(12)) }
         col.addView(jobsSummary)
+
+        col.addView(card {
+            addView(TextView(context).apply { text = "Last generated audio"; textSize = 14f; setTypeface(typeface, Typeface.BOLD) })
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(iconBtn(android.R.drawable.ic_media_play, "Play last audio") {
+                val f = lastAudio()
+                if (f.exists() && f.length() > 44) playFile(f.absolutePath) else toast("No audio yet")
+            })
+            waveform = WaveformView(context)
+            row.addView(waveform, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+            row.addView(iconBtn(android.R.drawable.ic_menu_share, "Share last audio") {
+                val f = lastAudio()
+                if (!f.exists() || f.length() <= 44) { toast("No audio yet"); return@iconBtn }
+                thread {
+                    runCatching { AudioShare.shareWavAsM4a(this@MainActivity, f, "TTS audio") }
+                        .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
+                }
+            })
+            addView(row)
+        })
+
         jobsList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(jobsList)
         return scroll
@@ -502,6 +622,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun rebuildJobs() {
         if (!::jobsList.isInitialized) return
+        val lf = lastAudio()
+        if (lf.exists() && lf.length() > 44) thread { waveform.loadWav(lf) }
         jobsList.removeAllViews()
         val jobs = JobStore.list(this)
         val totalAudio = jobs.sumOf { it.audioSecs }
@@ -509,10 +631,21 @@ class MainActivity : AppCompatActivity() {
         val fmt = java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US)
         for (j in jobs) {
             jobsList.addView(card {
-                addView(TextView(context).apply {
+                val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                head.addView(TextView(context).apply {
                     text = j.title.ifBlank { j.text.take(40) }
                     textSize = 16f; setTypeface(typeface, Typeface.BOLD)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (j.outputUri.isNotBlank()) {
+                    head.addView(iconBtn(android.R.drawable.ic_media_play, "Play") { playUri(Uri.parse(j.outputUri)) })
+                    head.addView(iconBtn(android.R.drawable.ic_menu_share, "Share") {
+                        AudioShare.shareUri(this@MainActivity, Uri.parse(j.outputUri), j.title)
+                    })
+                }
+                head.addView(iconBtn(android.R.drawable.ic_menu_delete, "Delete") {
+                    JobStore.delete(this@MainActivity, j.id); rebuildJobs()
                 })
+                addView(head)
                 val statusIcon = when (j.status) {
                     "done" -> "✓"; "running" -> "⏳"; "stopped" -> "⏹"; else -> "✗"
                 }
@@ -526,23 +659,24 @@ class MainActivity : AppCompatActivity() {
                         (if (j.output.isNotBlank()) "\n→ ${j.output}" else "") +
                         (if (j.error.isNotBlank()) "\n${j.error}" else "")
                 })
-                addView(buttonRow(
-                    "Re-run" to { rerunJob(j, j.voice) },
-                    "Share" to {
-                        if (j.outputUri.isNotBlank())
-                            AudioShare.shareUri(this@MainActivity, Uri.parse(j.outputUri), j.title)
-                        else toast("No saved file for this job (use Save mode, or Share from the Listen player)")
-                    },
-                    "Other voice…" to {
-                        val names = VoiceStore.list(this@MainActivity).map { it.name }.toTypedArray()
-                        if (names.isEmpty()) toast("No voices")
-                        else MaterialAlertDialogBuilder(this@MainActivity)
-                            .setTitle("Re-run with voice")
-                            .setItems(names) { _, which -> rerunJob(j, names[which]) }
-                            .show()
-                    },
-                    "Delete" to { JobStore.delete(this@MainActivity, j.id); rebuildJobs() },
-                ))
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(Button(context).apply {
+                        text = "Re-run"
+                        setOnClickListener { rerunJob(j, j.voice) }
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(Button(context).apply {
+                        text = "Other voice…"
+                        setOnClickListener {
+                            val names = VoiceStore.list(this@MainActivity).map { it.name }.toTypedArray()
+                            if (names.isEmpty()) toast("No voices")
+                            else MaterialAlertDialogBuilder(this@MainActivity)
+                                .setTitle("Re-run with voice")
+                                .setItems(names) { _, which -> rerunJob(j, names[which]) }
+                                .show()
+                        }
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+                })
             })
         }
         if (jobsList.childCount == 0) {
@@ -553,7 +687,7 @@ class MainActivity : AppCompatActivity() {
     private fun rerunJob(j: JobStore.Job, voiceName: String) {
         startTtsJob(j.text, j.title, j.save, voiceName)
         toast("Re-running “${j.title.ifBlank { j.text.take(24) }}” with $voiceName")
-        showTab(TAB_LISTEN)
+        showTab(TAB_NEWJOB)
     }
 
     // ---- Settings tab ------------------------------------------------------
@@ -561,16 +695,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelStatus: TextView
     private lateinit var modelBtn: Button
     private lateinit var modelProgress: ProgressBar
-    private lateinit var modelGroup: android.widget.RadioGroup
+    private lateinit var modelGroup: RadioGroup
     private var downloading = false
 
     private fun buildSettingsTab(): View {
         val (scroll, col) = page()
         col.title("Settings")
+        col.caption("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
 
         col.addView(card {
             addView(TextView(context).apply { text = "Model"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
-            modelGroup = android.widget.RadioGroup(context)
+            modelGroup = RadioGroup(context)
             for ((i, m) in ModelManager.CATALOG.withIndex()) {
                 modelGroup.addView(RadioButton(context).apply { text = m.label; id = i })
             }
@@ -583,14 +718,13 @@ class MainActivity : AppCompatActivity() {
             addView(modelBtn)
             modelGroup.setOnCheckedChangeListener { _, id ->
                 ModelManager.CATALOG.getOrNull(id)?.let { ModelManager.selectModel(this@MainActivity, it.id) }
-                refreshModelUi(); refreshVoiceLabel()
+                refreshModelUi()
             }
         })
 
         col.addView(card {
             addView(TextView(context).apply { text = "Engine"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
-            val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
-            val backendGroup = android.widget.RadioGroup(context)
+            val backendGroup = RadioGroup(context)
             val cpuBtn = RadioButton(context).apply { text = "CPU"; id = 100 }
             val clBtn = RadioButton(context).apply { text = "GPU · OpenCL (Adreno, Q4_0 model only)"; id = 101 }
             val vkBtn = RadioButton(context).apply { text = "GPU · Vulkan (any model)"; id = 102 }
@@ -598,16 +732,12 @@ class MainActivity : AppCompatActivity() {
             addView(backendGroup)
             val detectNote = TextView(context).apply { textSize = 12f; alpha = 0.7f; text = "Detecting GPU…" }
             addView(detectNote)
-            val stored = when (val b = prefs.getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
+            val stored = when (val b = prefs().getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
             backendGroup.check(when (stored) { "opencl" -> 101; "vulkan" -> 102; else -> 100 })
             backendGroup.setOnCheckedChangeListener { _, id ->
-                prefs.edit().putString("backend",
+                prefs().edit().putString("backend",
                     when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }).apply()
-                refreshVoiceLabel()
             }
-            // recommend the backend that fits this phone's GPU: Adreno ->
-            // OpenCL (its Vulkan driver can't compile the shaders); any other
-            // Vulkan GPU (Xclipse/Mali/RDNA) -> Vulkan; no GPU -> CPU
             thread {
                 val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")
                 val hasAdrenoCl = info.contains("OpenCL") && info.contains("Adreno")
@@ -644,32 +774,35 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(context).apply { text = "Debug"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
             val statusText = TextView(context).apply { textSize = 12f; setTypeface(Typeface.MONOSPACE) }
             addView(statusText)
-            addView(buttonRow(
-                "Status" to {
-                    thread {
-                        val s = buildString {
-                            val am = getSystemService(android.app.ActivityManager::class.java)
-                            val mi = android.app.ActivityManager.MemoryInfo()
-                            am.getMemoryInfo(mi)
-                            appendLine("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-                            appendLine("RAM ${mi.availMem / 1048576}/${mi.totalMem / 1048576} MB free")
-                            append(runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "device query failed: $it" })
-                        }
-                        runOnUiThread { statusText.text = s }
-                    }
-                },
-                "Copy log" to {
-                    thread {
-                        val report = DebugLog.buildReport(this@MainActivity)
-                        runOnUiThread {
-                            val cm = getSystemService(android.content.ClipboardManager::class.java)
-                            cm.setPrimaryClip(android.content.ClipData.newPlainText("ttsrunner-debug", report))
-                            toast("Debug report copied (${report.length / 1024} KB)")
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(Button(context).apply {
+                    text = "Status"
+                    setOnClickListener {
+                        thread {
+                            val s = runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "device query failed: $it" }
+                            runOnUiThread { statusText.text = s }
                         }
                     }
-                },
-                "Clear log" to { DebugLog.clear(this@MainActivity); toast("Log cleared") },
-            ))
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(context).apply {
+                    text = "Copy log"
+                    setOnClickListener {
+                        thread {
+                            val report = DebugLog.buildReport(this@MainActivity)
+                            runOnUiThread {
+                                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("ttsrunner-debug", report))
+                                toast("Debug report copied (${report.length / 1024} KB)")
+                            }
+                        }
+                    }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+                addView(Button(context).apply {
+                    text = "Clear log"
+                    setOnClickListener { DebugLog.clear(this@MainActivity); toast("Log cleared") }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+            })
         })
         refreshModelUi()
         return scroll
@@ -719,7 +852,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQ_IMPORT = 11
-        private const val TAB_LISTEN = 1
+        private const val TAB_NEWJOB = 1
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3
         private const val TAB_SETTINGS = 4
