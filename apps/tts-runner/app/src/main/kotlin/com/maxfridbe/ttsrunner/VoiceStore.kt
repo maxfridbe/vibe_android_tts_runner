@@ -33,7 +33,17 @@ object VoiceStore {
         return Voice(dest.nameWithoutExtension, dest)
     }
 
-    fun delete(v: Voice) { v.file.delete() }
+    fun delete(ctx: Context, v: Voice) {
+        v.file.delete()
+        previewFile(ctx, v.name).delete()
+    }
+
+    /** Cached generated sample for a voice ("pre-computed preview"): produced
+     *  once via a preview job, then played instantly from disk. */
+    fun previewFile(ctx: Context, name: String): File =
+        File(File(ctx.filesDir, "previews").apply { mkdirs() }, "$name.wav")
+
+    const val PREVIEW_TEXT = "Hello! This is a short preview of my voice. The quick brown fox jumps over the lazy dog."
 
     fun defaultVoice(ctx: Context): Voice? {
         val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)

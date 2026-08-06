@@ -38,6 +38,7 @@ class TtsService : Service() {
         const val EXTRA_VOICE = "voice"
         const val EXTRA_BACKEND = "backend"
         const val EXTRA_SAVE = "save"   // true: render to Music/TTS Runner/*.m4a instead of playing
+        const val EXTRA_PREVIEW = "preview"  // true: cache the output as the voice's preview clip
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -87,13 +88,14 @@ class TtsService : Service() {
                 val voice = intent.getStringExtra(EXTRA_VOICE) ?: ""
                 val backend = intent.getStringExtra(EXTRA_BACKEND) ?: "cpu"
                 val save = intent.getBooleanExtra(EXTRA_SAVE, false)
-                startJob(text, title, voice, backend, save)
+                val preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
+                startJob(text, title, voice, backend, save, preview)
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean) {
+    private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean, preview: Boolean = false) {
         // one job at a time; a new share replaces the current playback. The
         // takeover is asynchronous: the previous thread is signalled here and
         // the NEW thread waits for it without a deadline (a 3s join on this
@@ -118,7 +120,7 @@ class TtsService : Service() {
                 previous?.join()
                 stopRequested = false
                 TtsEngine.nResetCancel()
-                runJob(text, title, voiceName, backend, save)
+                runJob(text, title, voiceName, backend, save, preview)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -144,7 +146,7 @@ class TtsService : Service() {
     /** Non-null end-of-stream marker: LinkedBlockingQueue rejects null. */
     private val EOS = ByteArray(0)
 
-    private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean) {
+    private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean, preview: Boolean) {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
@@ -195,6 +197,14 @@ class TtsService : Service() {
         DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
         if (chunks.isEmpty()) { fail("Nothing to speak"); return }
 
+        val jobId = System.currentTimeMillis()
+        jobStartMs = jobId
+        if (!preview) {
+            JobStore.add(this, JobStore.Job(
+                id = jobId, title = title, text = text, voice = voice.name,
+                model = model.id, backend = backend, save = save, status = "running"))
+        }
+
         val queue = LinkedBlockingQueue<ByteArray>(2)
         val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }
         val saver = if (!save) null else try {
@@ -214,6 +224,9 @@ class TtsService : Service() {
         pcmFile().delete()
 
         var failed: String? = null
+        var audioSecs = 0.0
+        var genMs = 0L
+        var chunksDone = 0
         for ((i, chunk) in chunks.withIndex()) {
             if (stopRequested) break
             update(notif(title, "Chunk ${i + 1}/${chunks.size}", i * 1000 / chunks.size, 1000))
@@ -242,6 +255,9 @@ class TtsService : Service() {
             }
             DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
                 "${"%.1f".format(pcm.size / 2.0 / SAMPLE_RATE)}s audio in ${System.currentTimeMillis() - t0} ms")
+            audioSecs += pcm.size / 2.0 / SAMPLE_RATE
+            genMs += System.currentTimeMillis() - t0
+            chunksDone++
             runCatching { pcmFile().appendBytes(pcm) }
             if (saver != null) {
                 try {
@@ -262,6 +278,12 @@ class TtsService : Service() {
         DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
         finalizeLastWav()
 
+        // stats summary: "25s audio · 3m 12s · RTF 7.6"
+        val stats = if (audioSecs > 0)
+            "${"%.0f".format(audioSecs)}s audio · ${fmtDuration(genMs)} · RTF ${"%.1f".format(genMs / 1000.0 / audioSecs)}"
+        else ""
+        var output = ""
+
         when {
             stopRequested -> { saver?.abort(); broadcast("stopped", 0, 0, "") }
             failed != null -> { saver?.abort(); fail(failed) }
@@ -272,12 +294,36 @@ class TtsService : Service() {
                     DebugLog.log(this, "TtsService", "saver.finish failed", e)
                     fail("Save failed: ${e.message}"); return
                 }
-                DebugLog.log(this, "TtsService", "saved: $path")
-                broadcast("saved", chunks.size, chunks.size, path)
+                output = path
+                DebugLog.log(this, "TtsService", "saved: $path ($stats)")
+                broadcast("saved", chunks.size, chunks.size, "$path — $stats")
                 update(notif(title, "Saved to $path", 0, 0))
             }
-            else -> broadcast("done", chunks.size, chunks.size, "")
+            else -> {
+                if (preview && audioSecs > 0) {
+                    runCatching {
+                        java.io.File(filesDir, "last_audio.wav")
+                            .copyTo(VoiceStore.previewFile(this, voice.name), overwrite = true)
+                    }
+                }
+                broadcast("done", chunks.size, chunks.size, stats)
+            }
         }
+        if (!preview) {
+            JobStore.update(this, jobId) {
+                it.status = when { stopRequested -> "stopped"; failed != null -> "failed"; else -> "done" }
+                it.chunks = chunksDone
+                it.audioSecs = audioSecs
+                it.genMs = genMs
+                it.output = output
+                it.error = failed ?: ""
+            }
+        }
+    }
+
+    private fun fmtDuration(ms: Long): String {
+        val s = ms / 1000
+        return if (s >= 60) "${s / 60}m ${s % 60}s" else "${s}s"
     }
 
     /** Silent 8 kHz mono playback, ~0% CPU; exists only so the OS classifies
@@ -336,24 +382,30 @@ class TtsService : Service() {
         }
     }
 
-    /** Whole-job progress (0–1000‰), fed to both the notification and the UI.
-     *  In-chunk position uses expected frames (cap / 2.2), clamped, so the bar
-     *  moves smoothly instead of stalling at the safety margin. */
+    /** Whole-job progress (0–1000‰) + ETA, fed to both the notification and
+     *  the UI. In-chunk position uses expected frames (cap / 1.8), clamped,
+     *  so the bar moves smoothly instead of stalling at the safety margin. */
     private var lastNotifUpdate = 0L
+    @Volatile var jobStartMs = 0L
     private fun reportProgress(title: String, chunkIdx: Int, totalChunks: Int, framesDone: Int, framesMax: Int) {
-        val within = minOf(1.0, framesDone / (framesMax / 2.2))
+        val within = minOf(1.0, framesDone / (framesMax / 1.8))
         val permille = (((chunkIdx + within) / totalChunks) * 1000).toInt().coerceIn(0, 1000)
         val now = System.currentTimeMillis()
+        // ETA from overall progress rate; meaningless below ~5%
+        val etaSecs = if (permille >= 50 && jobStartMs > 0)
+            ((now - jobStartMs) * (1000 - permille) / permille / 1000).toInt() else -1
         if (now - lastFramesBroadcast > 500) {
             lastFramesBroadcast = now
             sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)
                 .putExtra("state", "frames").putExtra("chunk", framesDone)
                 .putExtra("total", framesMax).putExtra("permille", permille)
+                .putExtra("eta", etaSecs)
                 .putExtra("message", ""))
         }
         if (now - lastNotifUpdate > 1500) {
             lastNotifUpdate = now
-            update(notif(title, "Chunk ${chunkIdx + 1}/$totalChunks", permille, 1000))
+            val etaText = if (etaSecs >= 0) " · ~${fmtDuration(etaSecs * 1000L)} left" else ""
+            update(notif(title, "Chunk ${chunkIdx + 1}/$totalChunks$etaText", permille, 1000))
         }
     }
 

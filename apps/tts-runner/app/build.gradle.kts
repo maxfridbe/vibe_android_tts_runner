@@ -90,4 +90,6 @@ android {
 
 dependencies {
     implementation("org.jsoup:jsoup:1.17.2") // article extraction for shared URLs
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0") // M3 tabs/nav/cards
 }
