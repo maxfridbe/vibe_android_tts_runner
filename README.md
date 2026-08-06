@@ -1,5 +1,7 @@
 # TTS Runner — on-device Qwen3-TTS for Android
 
+[![build](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml/badge.svg)](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml)
+
 Share any text or article link to **TTS Runner** and it reads it aloud in a
 cloned voice, entirely on-device: no server, no account, no audio leaving the
 phone. Built on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s Qwen3-TTS
