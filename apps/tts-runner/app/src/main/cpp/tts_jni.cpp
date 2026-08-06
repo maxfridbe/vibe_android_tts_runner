@@ -41,6 +41,7 @@ struct Engine {
 
 std::unique_ptr<Engine> g_engine;
 std::atomic<bool> g_cancel{false};
+bool g_use_mmap = true;   // see nLoad; cleared permanently if an mmap load fails
 std::string g_last_error;
 
 std::string jstr(JNIEnv * env, jstring s) {
@@ -80,6 +81,12 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
     params.n_ctx       = 4096;
     params.cpuparams.n_threads = nThreads > 0 ? nThreads : 4;
     params.warmup      = false;
+    // mmap keeps model weights file-backed: the kernel can evict them under
+    // pressure instead of the process being reclaimed/thrashed (a 1.5GB model
+    // pushed an 7.4GB phone into swap with mmap off). GGUF tensor offsets are
+    // 4KB-aligned, so this is unsafe on 16KB-page devices — nLoad retries with
+    // mmap off when the mmap attempt fails.
+    params.load_mode   = g_use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
 
     const std::string backend = jstr(env, jbackend);   // "cpu" | "opencl" | "vulkan"
     params.mmproj_use_gpu = false;  // codec on CPU always, see nLoad comment
@@ -117,6 +124,14 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
          backend.c_str(), params.cpuparams.n_threads, params.n_gpu_layers);
 
     eng->init = common_init_from_params(params);
+    if ((!eng->init || !eng->init->model() || !eng->init->context()) && g_use_mmap) {
+        // 16KB-page devices (and odd filesystems) can fail an mmap load;
+        // fall back to a plain read for the rest of the process's life
+        LOGE("mmap load failed, retrying without mmap");
+        g_use_mmap = false;
+        params.load_mode = LLAMA_LOAD_MODE_NONE;
+        eng->init = common_init_from_params(params);
+    }
     if (!eng->init || !eng->init->model() || !eng->init->context()) {
         g_last_error = "failed to load model " + params.model.path;
         LOGE("%s", g_last_error.c_str());
@@ -142,8 +157,9 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
 
     eng->backend_used = backend;
     g_engine = std::move(eng);
-    LOGI("engine loaded in %.1fs (backend=%s threads=%d)",
-         (ggml_time_us() - t_load_start) / 1e6, backend.c_str(), params.cpuparams.n_threads);
+    LOGI("engine loaded in %.1fs (backend=%s threads=%d mmap=%d)",
+         (ggml_time_us() - t_load_start) / 1e6, backend.c_str(), params.cpuparams.n_threads,
+         g_use_mmap ? 1 : 0);
     return JNI_TRUE;
 } catch (const std::exception & e) {
     // llama.cpp and driver wrappers throw (e.g. vk::SystemError on Adreno);

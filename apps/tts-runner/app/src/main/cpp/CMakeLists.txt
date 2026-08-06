@@ -28,8 +28,12 @@ if(ANDROID)
     set(SHIM "${CMAKE_CURRENT_SOURCE_DIR}/android_posix_shim.h")
     set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -include${SHIM}")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include${SHIM}")
-    # Android 15+ 16 KB pages vs 4 KB-aligned GGUF tensor offsets break mmap
-    set(GGML_MMAP OFF CACHE BOOL "" FORCE)
+    # mmap is compiled IN (weights stay file-backed, so the kernel evicts pages
+    # instead of thrashing/reclaiming a multi-GB process) and chosen per load at
+    # runtime: tts_jni tries mmap first and permanently falls back to a plain
+    # read if that load fails, which is what 16KB-page devices need (GGUF tensor
+    # offsets are 4KB-aligned).
+    set(GGML_MMAP ON CACHE BOOL "" FORCE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
         # +i8mm enables ggml's int8 matmul kernels (big quant-gemm speedup);
