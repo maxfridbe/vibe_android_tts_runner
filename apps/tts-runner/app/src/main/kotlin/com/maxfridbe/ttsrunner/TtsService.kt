@@ -204,31 +204,41 @@ class TtsService : Service() {
         }
         DebugLog.log(this, "TtsService", "model=${model.id} voice=${voice?.file?.name ?: "(designing, seed=$seed)"}")
 
-        if (!ensureLoaded(model, backend)) {
-            if (backend == "cpu") {
-                fail("Model load failed: ${TtsEngine.nLastError()}"); return
-            }
-            DebugLog.log(this, "TtsService", "GPU load failed (${TtsEngine.nLastError()}); falling back to cpu")
-            broadcast("note", 0, 0, "GPU init failed — using CPU")
-            backend = "cpu"
-            marker.writeText(backend)
-            if (!ensureLoaded(model, backend)) {
-                fail("Model load failed: ${TtsEngine.nLastError()}"); return
-            }
-        }
-
-        val chunks = Chunker.split(text)
-        DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
-        if (chunks.isEmpty()) { fail("Nothing to speak"); return }
-
+        // Register the job before loading the model: the UI switches to the
+        // Jobs tab the moment a job is added, and a cold load takes ~20 s —
+        // an empty list there would look like nothing happened.
         val jobId = System.currentTimeMillis()
-        jobStartMs = jobId
         val ephemeral = preview || design   // previews/design rolls stay out of job history
         if (!ephemeral) {
             JobStore.add(this, JobStore.Job(
                 id = jobId, title = title, text = text, voice = voice!!.name,
                 model = model.id, backend = backend, save = save, status = "running"))
         }
+        fun abort(reason: String) {
+            persistJobResult(ephemeral, jobId, false, reason, 0, 0.0, 0, "", "")
+            fail(reason)
+        }
+
+        if (!ensureLoaded(model, backend)) {
+            if (backend == "cpu") {
+                abort("Model load failed: ${TtsEngine.nLastError()}"); return
+            }
+            DebugLog.log(this, "TtsService", "GPU load failed (${TtsEngine.nLastError()}); falling back to cpu")
+            broadcast("note", 0, 0, "GPU init failed — using CPU")
+            backend = "cpu"
+            marker.writeText(backend)
+            if (!ephemeral) JobStore.update(this, jobId) { it.backend = "cpu" }
+            if (!ensureLoaded(model, backend)) {
+                abort("Model load failed: ${TtsEngine.nLastError()}"); return
+            }
+        }
+        // ETA is derived from generation speed, so the clock starts after the
+        // one-off model load
+        jobStartMs = System.currentTimeMillis()
+
+        val chunks = Chunker.split(text)
+        DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
+        if (chunks.isEmpty()) { abort("Nothing to speak"); return }
 
         val queue = LinkedBlockingQueue<ByteArray>(2)
         val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }

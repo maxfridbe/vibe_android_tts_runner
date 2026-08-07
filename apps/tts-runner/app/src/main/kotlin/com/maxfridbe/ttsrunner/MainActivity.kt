@@ -41,10 +41,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var content: FrameLayout
     private lateinit var memMeter: TextView
     private lateinit var statusPane: View
-    private var swipeDetector: android.view.GestureDetector? = null
+    private lateinit var swipeTrack: FrameLayout
+    private lateinit var swipeBar: View
     private var navSelect: ((Int) -> Unit)? = null
     private val tabs = mutableMapOf<Int, View>()
     private var currentTab = TAB_NEWJOB
+    private val tabOrder = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_SETTINGS)
 
     // New job tab widgets (referenced from the status receiver)
     private lateinit var runStatus: TextView
@@ -81,6 +83,8 @@ class MainActivity : AppCompatActivity() {
             val busy = state in setOf("loading", "generating", "frames")
             stopBtn.visibility = if (busy) View.VISIBLE else View.GONE
             etaText.text = if (eta >= 0) "≈ ${if (eta >= 60) "${eta / 60}m ${eta % 60}s" else "${eta}s"} remaining" else ""
+            showStatusPane(busy)
+            refreshJobsIfChanged()
             runStatus.text = when (state) {
                 "loading" -> { runProgress.progress = 0; "Loading model…" }
                 "generating" -> {
@@ -98,6 +102,10 @@ class MainActivity : AppCompatActivity() {
                 "error" -> { runProgress.progress = 0; etaText.text = ""; "Error: $message" }
                 else -> state ?: ""
             }
+            // the running job's card mirrors the pane, so the Jobs tab is a
+            // complete view of the work on its own
+            runningLine?.text = runStatus.text
+            runningBar?.let { if (permille >= 0) it.progress = permille }
         }
     }
 
@@ -106,6 +114,22 @@ class MainActivity : AppCompatActivity() {
         etaText.text = ""
         if (tabs.containsKey(TAB_JOBS)) rebuildJobs()
         if (tabs.containsKey(TAB_VOICES)) rebuildVoices()
+    }
+
+    /** The pane is noise when the engine is idle: show it while a job runs,
+     *  keep the outcome on screen briefly, then get out of the way. */
+    private val hideStatusPane = Runnable { statusPane.visibility = View.GONE }
+
+    private fun showStatusPane(busy: Boolean) {
+        ui.removeCallbacks(hideStatusPane)
+        statusPane.visibility = View.VISIBLE
+        if (!busy) ui.postDelayed(hideStatusPane, 6000)
+    }
+
+    private fun themeColor(attr: Int): Int {
+        val tv = android.util.TypedValue()
+        theme.resolveAttribute(attr, tv, true)
+        return if (tv.resourceId != 0) getColor(tv.resourceId) else tv.data
     }
 
     // ---- activity ----------------------------------------------------------
@@ -130,6 +154,23 @@ class MainActivity : AppCompatActivity() {
         // from every tab (a job started from the share sheet or a re-run is
         // just as interesting as one started on the New job tab)
         statusPane = buildStatusPane().noStateSave()
+        statusPane.visibility = View.GONE
+        // tab-swipe indicator: one slot per tab, tracks the drag and settles
+        // on the tab the release lands on
+        swipeBar = View(this).apply {
+            setBackgroundColor(themeColor(com.google.android.material.R.attr.colorPrimary))
+            alpha = 0f
+        }
+        swipeTrack = FrameLayout(this).apply {
+            addView(swipeBar, FrameLayout.LayoutParams(0, dp(3)))
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                val slot = width / tabOrder.size
+                if (slot > 0 && swipeBar.layoutParams.width != slot) {
+                    swipeBar.layoutParams = swipeBar.layoutParams.also { it.width = slot }
+                    swipeBar.translationX = slotIndex() * slot.toFloat()
+                }
+            }
+        }
         val contentWithMeter = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(FrameLayout(context).apply {
@@ -138,6 +179,7 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP or Gravity.END))
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(swipeTrack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)))
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
 
@@ -145,7 +187,7 @@ class MainActivity : AppCompatActivity() {
         val navItems = { menu: Menu ->
             menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(R.drawable.ic_add)
             menu.add(0, TAB_VOICES, 1, "Voices").setIcon(R.drawable.ic_mic)
-            menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_history)
+            menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_jobs)
             menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(R.drawable.ic_settings)
         }
 
@@ -175,20 +217,6 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         }
-        // horizontal swipe switches tabs (content scrolls vertically, so
-        // horizontal gestures are free)
-        val swipe = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(e1: android.view.MotionEvent?, e2: android.view.MotionEvent, vx: Float, vy: Float): Boolean {
-                val dx = e2.x - (e1?.x ?: return false)
-                if (kotlin.math.abs(dx) < dp(64) || kotlin.math.abs(dx) < kotlin.math.abs(e2.y - e1.y)) return false
-                val order = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_SETTINGS)
-                val next = order.indexOf(currentTab) + if (dx < 0) 1 else -1
-                order.getOrNull(next)?.let { selectTab(it) }
-                return true
-            }
-        })
-        swipeDetector = swipe
-
         setContentView(root)
         showTab(currentTab)
     }
@@ -229,13 +257,65 @@ class MainActivity : AppCompatActivity() {
         content.removeAllViews()
         content.addView(v)
         v.noStateSave()
+        // keep the swipe indicator in sync with taps on the nav bar too
+        if (!dragging && ::swipeBar.isInitialized && swipeBar.width > 0) {
+            swipeBar.translationX = slotIndex() * swipeBar.width.toFloat()
+        }
     }
 
-    // every touch reaches the detector here; children still handle their own
-    // gestures because this only observes
+    // ---- tab swipe ---------------------------------------------------------
+
+    private var downX = 0f
+    private var downY = 0f
+    private var dragging = false
+
+    private fun slotIndex() = tabOrder.indexOf(currentTab).coerceAtLeast(0)
+
+    /** Every touch is observed here — children still handle their own gestures,
+     *  the content just rides along horizontally and the indicator shows which
+     *  tab a release would land on. */
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
-        swipeDetector?.onTouchEvent(ev)
+        when (ev.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                downX = ev.x; downY = ev.y; dragging = false
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = ev.x - downX
+                val dy = ev.y - downY
+                if (!dragging && kotlin.math.abs(dx) > dp(24) &&
+                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                    dragging = true
+                    swipeBar.animate().alpha(1f).setStartDelay(0).setDuration(90).start()
+                }
+                if (dragging) dragSwipe(dx)
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                if (dragging) { dragging = false; releaseSwipe(ev.x - downX) }
+        }
         return super.dispatchTouchEvent(ev)
+    }
+
+    private fun dragSwipe(dx: Float) {
+        val slot = swipeBar.width.toFloat()
+        if (slot <= 0f) return
+        val idx = slotIndex()
+        // the indicator leads toward the incoming tab, so it moves opposite the
+        // finger — the same convention as a pager underline
+        var travel = (-dx * 0.5f).coerceIn(-slot, slot)
+        if (idx == 0 && travel < 0f) travel = 0f
+        if (idx == tabOrder.lastIndex && travel > 0f) travel = 0f
+        swipeBar.translationX = idx * slot + travel
+        content.translationX = if (travel == 0f) 0f else (dx * 0.12f).coerceIn(-slot, slot)
+    }
+
+    private fun releaseSwipe(dx: Float) {
+        val slot = swipeBar.width.toFloat()
+        content.animate().translationX(0f).setDuration(150).start()
+        val next = slotIndex() + if (dx < 0) 1 else -1
+        if (kotlin.math.abs(dx) > dp(72) && next in tabOrder.indices) selectTab(tabOrder[next])
+        swipeBar.animate().translationX(slotIndex() * slot).setDuration(180)
+            .withEndAction { swipeBar.animate().alpha(0f).setStartDelay(140).setDuration(220).start() }
+            .start()
     }
 
     /** Switch tab and move the navigation highlight with it. */
@@ -295,6 +375,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         stopPlayback()
+        runningPulse?.cancel()
+        ui.removeCallbacks(hideStatusPane)
         super.onDestroy()
     }
 
@@ -380,8 +462,10 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener {
                     val text = jobText.text.toString()
                     if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
-                    startTtsJob(text, if (pickedSave) "TTS " + text.take(24) else "TTS job",
+                    val started = startTtsJob(text, if (pickedSave) "TTS " + text.take(24) else "TTS job",
                         save = pickedSave, voiceName = pickedVoice)
+                    // a queued job belongs to the Jobs tab — go watch it there
+                    if (started) selectTab(TAB_JOBS)
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(actions)
@@ -436,10 +520,10 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null) {
+    private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null): Boolean {
         val v = voiceName?.let { n -> VoiceStore.list(this).find { it.name == n } } ?: VoiceStore.defaultVoice(this)
-        if (v == null) { toast("Import or design a voice first (Voices tab)"); return }
-        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        if (v == null) { toast("Import or design a voice first (Voices tab)"); return false }
+        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return false }
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, text)
@@ -447,6 +531,10 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_VOICE, v.name)
             .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
             .putExtra(TtsService.EXTRA_SAVE, save))
+        // the engine writes the "running" row from its own process; give it a
+        // beat, then show it (broadcasts refresh the list from then on)
+        ui.postDelayed({ refreshJobsIfChanged() }, 500)
+        return true
     }
 
     // ---- audio playback helpers -------------------------------------------
@@ -704,6 +792,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var jobsSummary: TextView
     private lateinit var waveform: WaveformView
 
+    // widgets of the currently running job's card, driven by the status
+    // broadcasts; null whenever no job is running or the tab is elsewhere
+    private var runningLine: TextView? = null
+    private var runningBar: ProgressBar? = null
+    private var runningPulse: android.animation.ObjectAnimator? = null
+
     private fun buildJobsTab(): View {
         val (scroll, col) = page()
         col.title("Jobs")
@@ -737,8 +831,28 @@ class MainActivity : AppCompatActivity() {
         return scroll
     }
 
+    /** Cheap poll off the status broadcasts: rebuild only when a job appears or
+     *  changes state, so a running job's per-frame updates don't re-lay-out the
+     *  whole list (they go straight to runningLine/runningBar instead). */
+    private var jobsSig = ""
+    private var lastJobsCheck = 0L
+
+    private fun refreshJobsIfChanged() {
+        if (currentTab != TAB_JOBS || !::jobsList.isInitialized) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastJobsCheck < 1500) return
+        lastJobsCheck = now
+        if (jobsSignature() != jobsSig) rebuildJobs()
+    }
+
+    private fun jobsSignature() = JobStore.list(this).joinToString(",") { "${it.id}:${it.status}" }
+
     private fun rebuildJobs() {
         if (!::jobsList.isInitialized) return
+        runningPulse?.cancel()
+        runningPulse = null
+        runningLine = null
+        runningBar = null
         val engineAlive = runCatching {
             getSystemService(android.app.ActivityManager::class.java)
                 .runningAppProcesses?.any { it.processName.endsWith(":engine") } == true
@@ -748,16 +862,38 @@ class MainActivity : AppCompatActivity() {
         if (lf.exists() && lf.length() > 44) thread { waveform.loadWav(lf) }
         jobsList.removeAllViews()
         val jobs = JobStore.list(this)
+        jobsSig = jobs.joinToString(",") { "${it.id}:${it.status}" }
         val totalAudio = jobs.sumOf { it.audioSecs }
         jobsSummary.text = "${jobs.size} jobs · ${"%.0f".format(totalAudio / 60)} min of audio generated"
         val fmt = java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US)
         for (j in jobs) {
-            jobsList.addView(card {
+            val running = j.status == "running"
+            val jobCard = card {
                 val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                if (running) {
+                    // pulsing dot: the one moving thing in the list
+                    head.addView(TextView(context).apply {
+                        text = "●"; textSize = 14f
+                        setTextColor(themeColor(com.google.android.material.R.attr.colorPrimary))
+                        setPadding(0, 0, dp(8), 0)
+                        runningPulse = android.animation.ObjectAnimator.ofFloat(this, "alpha", 1f, 0.25f).apply {
+                            duration = 700
+                            repeatMode = android.animation.ValueAnimator.REVERSE
+                            repeatCount = android.animation.ValueAnimator.INFINITE
+                            start()
+                        }
+                    })
+                }
                 head.addView(TextView(context).apply {
                     text = j.title.ifBlank { j.text.take(40) }
                     textSize = 16f; setTypeface(typeface, Typeface.BOLD)
+                    if (running) setTextColor(themeColor(com.google.android.material.R.attr.colorPrimary))
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                head.addView(iconBtn(R.drawable.ic_copy, "Copy text") {
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("tts-text", j.text))
+                    toast("Text copied (${j.text.length} chars)")
+                })
                 if (j.outputUri.isNotBlank()) {
                     lateinit var jobBtn: ImageButton
                     jobBtn = iconBtn(R.drawable.ic_play, "Play") { playUri(Uri.parse(j.outputUri), jobBtn) }
@@ -783,6 +919,21 @@ class MainActivity : AppCompatActivity() {
                         (if (j.output.isNotBlank()) "\n→ ${j.output}" else "") +
                         (if (j.error.isNotBlank()) "\n${j.error}" else "")
                 })
+                if (running) {
+                    // live mirror of the status pane, updated by the receiver
+                    runningLine = TextView(context).apply {
+                        textSize = 13f
+                        text = runStatus.text.ifBlank { "Starting…" }
+                        setPadding(0, dp(4), 0, dp(2))
+                    }
+                    addView(runningLine)
+                    runningBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                        max = 1000
+                        progress = runProgress.progress
+                        isIndeterminate = runProgress.progress <= 0
+                    }
+                    addView(runningBar)
+                }
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     addView(Button(context).apply {
@@ -801,7 +952,14 @@ class MainActivity : AppCompatActivity() {
                         }
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
                 })
-            })
+            }
+            if (running) {
+                jobCard.strokeWidth = dp(2)
+                jobCard.strokeColor = themeColor(com.google.android.material.R.attr.colorPrimary)
+                jobCard.setCardBackgroundColor(
+                    themeColor(com.google.android.material.R.attr.colorSecondaryContainer))
+            }
+            jobsList.addView(jobCard)
         }
         if (jobsList.childCount == 0) {
             jobsList.addView(TextView(this).apply { text = "No jobs yet."; alpha = 0.6f })
@@ -809,9 +967,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rerunJob(j: JobStore.Job, voiceName: String) {
-        startTtsJob(j.text, j.title, j.save, voiceName)
+        if (!startTtsJob(j.text, j.title, j.save, voiceName)) return
         toast("Re-running “${j.title.ifBlank { j.text.take(24) }}” with $voiceName")
-        selectTab(TAB_NEWJOB)
+        selectTab(TAB_JOBS)
     }
 
     // ---- Settings tab ------------------------------------------------------

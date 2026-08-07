@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Jobs: a stack of three task rows, the middle one still filling in and the
+     right-hand tick marking work that finished. Stroke widths are trimmed
+     slightly from the source SVG so the rows stay open at 24dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+
+    <path android:pathData="M4,4h16a1,1 0 0,1 1,1v2a1,1 0 0,1 -1,1h-16a1,1 0 0,1 -1,-1v-2a1,1 0 0,1 1,-1z"
+        android:strokeColor="@android:color/white" android:strokeWidth="1.2" />
+    <path android:pathData="M4,10h16a1,1 0 0,1 1,1v2a1,1 0 0,1 -1,1h-16a1,1 0 0,1 -1,-1v-2a1,1 0 0,1 1,-1z"
+        android:strokeColor="@android:color/white" android:strokeWidth="1.2" />
+    <path android:pathData="M4,16h16a1,1 0 0,1 1,1v2a1,1 0 0,1 -1,1h-16a1,1 0 0,1 -1,-1v-2a1,1 0 0,1 1,-1z"
+        android:strokeColor="@android:color/white" android:strokeWidth="1.2" />
+
+    <path android:pathData="M6,6h4M13,6h2" android:strokeColor="@android:color/white"
+        android:strokeWidth="1.05" android:strokeLineCap="round" />
+    <path android:pathData="M6,12h7" android:strokeColor="@android:color/white"
+        android:strokeWidth="1.05" android:strokeLineCap="round" />
+    <path android:pathData="M6,18h3M12,18h4" android:strokeColor="@android:color/white"
+        android:strokeWidth="1.05" android:strokeLineCap="round" />
+
+    <path android:pathData="M17.3,12l1,1 2,-2" android:strokeColor="@android:color/white"
+        android:strokeWidth="1.4" android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>
