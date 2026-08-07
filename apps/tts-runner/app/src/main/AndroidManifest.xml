@@ -69,5 +69,12 @@
             android:process=":engine"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- dead-man alarm target: revives a save job whose engine process the
+             OS killed (sticky restart only works once on Samsung) -->
+        <receiver
+            android:name=".ResumeReceiver"
+            android:process=":engine"
+            android:exported="false" />
     </application>
 </manifest>

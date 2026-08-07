@@ -32,6 +32,28 @@ class TtsService : Service() {
     companion object {
         const val ACTION_SPEAK = "com.maxfridbe.ttsrunner.SPEAK"
         const val ACTION_STOP = "com.maxfridbe.ttsrunner.STOP"
+        /** From ResumeReceiver: "are you alive?" — no-op while working, an
+         *  auto-resume happens in onCreate when the process had to be spawned. */
+        const val ACTION_NUDGE = "com.maxfridbe.ttsrunner.NUDGE"
+
+        /** setAndAllowWhileIdle: no exact-alarm permission needed, fires even
+         *  in doze (batched, ≤15 min late there — nothing for a job measured
+         *  in hours). Re-armed on every chunk and on every firing. */
+        fun armResumeAlarm(ctx: android.content.Context) {
+            val am = ctx.getSystemService(android.app.AlarmManager::class.java)
+            am.setAndAllowWhileIdle(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + 3 * 60_000L,
+                resumePi(ctx))
+        }
+
+        fun cancelResumeAlarm(ctx: android.content.Context) {
+            ctx.getSystemService(android.app.AlarmManager::class.java).cancel(resumePi(ctx))
+        }
+
+        private fun resumePi(ctx: android.content.Context) = android.app.PendingIntent.getBroadcast(
+            ctx, 41, Intent(ctx, ResumeReceiver::class.java),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
         const val STATUS_BROADCAST = "com.maxfridbe.ttsrunner.STATUS"
         const val EXTRA_TEXT = "text"
         const val EXTRA_TITLE = "title"
@@ -83,20 +105,85 @@ class TtsService : Service() {
         val marker = java.io.File(filesDir, "job-inflight")
         if (marker.exists()) {
             DebugLog.log(this, "TtsService", "engine restarted with backend=${marker.readText()} in flight; job died")
-            JobStore.failRunning(this, "interrupted — the engine process was killed mid-job")
             marker.delete()
-            sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName).putExtra("state", "jobs"))
+            if (!maybeAutoResume()) {
+                JobStore.failRunning(this, "interrupted — the engine process was killed mid-job")
+                sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName).putExtra("state", "jobs"))
+            }
+        }
+    }
+
+    private fun pendingFile() = java.io.File(filesDir, "pending-job.json")
+
+    /** A save job whose process was killed continues by itself, on the SAME
+     *  engine the user picked — never a silent backend switch. The kill freed
+     *  this process's own ~2.5 GB, so the retry usually fits. Strikes are
+     *  progress-gated: any attempt that lands a new chunk resets the count, so
+     *  a long job survives any number of kills as long as each one gets
+     *  further; three attempts stuck on the same chunk give up and leave the
+     *  job to a manual resume. Listen jobs are never auto-resumed — the phone
+     *  starting to speak out of nowhere is worse than a failed job. */
+    private fun maybeAutoResume(): Boolean {
+        val f = pendingFile()
+        if (!f.exists()) return false
+        try {
+            val o = org.json.JSONObject(f.readText())
+            val id = o.getLong("id")
+            val cachedNow = JobStore.cachedChunks(this, id)
+            val attempts = if (cachedNow > o.optInt("cachedAtLastAttempt", -1)) 1
+                           else o.optInt("attempts", 0) + 1
+            if (attempts > 3) {
+                DebugLog.log(this, "TtsService", "auto-resume: giving up after 3 attempts stuck at $cachedNow chunks")
+                JobStore.failRunning(this, "killed 3 times at chunk ${cachedNow + 1} — " +
+                    "resume manually (CPU may fit where the GPU did not)")
+                f.delete()
+                sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName).putExtra("state", "jobs"))
+                return true
+            }
+            val voiceName = o.getString("voice")
+            if (VoiceStore.list(this).none { it.name == voiceName }) { f.delete(); return false }
+            o.put("attempts", attempts).put("cachedAtLastAttempt", cachedNow)
+            f.writeText(o.toString())
+            DebugLog.log(this, "TtsService",
+                "auto-resume attempt $attempts: $cachedNow chunks cached, backend=${o.getString("backend")}")
+            startJob(o.getString("text"), o.getString("title"), voiceName, o.getString("backend"),
+                save = true, resumeId = id, autoResume = true)
+            return true
+        } catch (e: Exception) {
+            DebugLog.log(this, "TtsService", "auto-resume failed", e)
+            f.delete()
+            return false
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        if (intent == null) {
+            // sticky restart after a process death: onCreate already resumed
+            // anything resumable; with no work this process has no reason to live
+            if (!working) idleHandler.postDelayed(idleRunnable, 5_000)
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_STOP -> {
                 stopRequested = true
                 TtsEngine.nCancel()
+                pendingFile().delete()   // an explicit stop must not resurrect the job
+                cancelResumeAlarm(this)
                 broadcast("stopped", 0, 0, "")
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            }
+            ACTION_NUDGE -> {
+                // alive and working: satisfy the FGS contract and carry on.
+                // Spawned dead: onCreate already ran maybeAutoResume, which
+                // either started the job (working=true) or cleaned up.
+                if (working) {
+                    startInForeground(notif("TTS Runner", "Generating…", 0, 0))
+                } else {
+                    startInForeground(notif("TTS Runner", "", 0, 0))
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    idleHandler.postDelayed(idleRunnable, 5_000)
+                }
             }
             ACTION_SPEAK -> {
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: return START_NOT_STICKY
@@ -110,6 +197,9 @@ class TtsService : Service() {
                 val instruct = intent.getStringExtra(EXTRA_INSTRUCT) ?: ""
                 val resumeId = intent.getLongExtra(EXTRA_JOB_ID, 0L)
                 startJob(text, title, voice, backend, save, preview, design, seed, instruct, resumeId)
+                // sticky: if this process is killed mid-save, Android restarts
+                // it and onCreate's auto-resume continues the job
+                return if (save) START_STICKY else START_NOT_STICKY
             }
         }
         return START_NOT_STICKY
@@ -117,7 +207,7 @@ class TtsService : Service() {
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean,
                          preview: Boolean = false, design: Boolean = false, seed: Int = 0,
-                         instruct: String = "", resumeId: Long = 0L) {
+                         instruct: String = "", resumeId: Long = 0L, autoResume: Boolean = false) {
         // one job at a time; a new share replaces the current playback. The
         // takeover is asynchronous: the previous thread is signalled here and
         // the NEW thread waits for it without a deadline (a 3s join on this
@@ -142,7 +232,7 @@ class TtsService : Service() {
                 previous?.join()
                 stopRequested = false
                 TtsEngine.nResetCancel()
-                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct, resumeId)
+                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct, resumeId, autoResume)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -170,7 +260,7 @@ class TtsService : Service() {
 
     private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean,
                        preview: Boolean, design: Boolean, seed: Int, instructWanted: String,
-                       resumeId: Long = 0L) {
+                       resumeId: Long = 0L, autoResume: Boolean = false) {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
@@ -243,6 +333,22 @@ class TtsService : Service() {
             fail(reason)
         }
         if (chunks.isEmpty()) { abort("Nothing to speak"); return }
+
+        // Save jobs persist their spec so a killed process can pick them back
+        // up (maybeAutoResume). An auto-resume attempt keeps the strike counter
+        // its restart just wrote; everything else re-arms it — a manual resume
+        // is the user's decision to grant a fresh set of retries.
+        if (!ephemeral && save && !autoResume) {
+            runCatching {
+                pendingFile().writeText(org.json.JSONObject()
+                    .put("id", jobId).put("text", text).put("title", title)
+                    .put("voice", voice!!.name).put("backend", backend)
+                    .put("attempts", 0)
+                    .put("cachedAtLastAttempt", JobStore.cachedChunks(this, jobId) - 1)
+                    .toString())
+            }
+        }
+        if (!ephemeral && save) armResumeAlarm(this)
 
         // Chunk cache: every generated chunk is kept as raw PCM under
         // jobs/<id>/, so a job that dies (or is stopped) resumes from the first
@@ -330,6 +436,7 @@ class TtsService : Service() {
             audioSecs += bytes.size / 2.0 / SAMPLE_RATE
             chunksDone++
             runCatching { pcmFile().appendBytes(bytes) }
+            if (saver != null) armResumeAlarm(this)   // push the dead-man deadline out
             if (saver != null) {
                 try {
                     saver.write(bytes)
@@ -401,6 +508,10 @@ class TtsService : Service() {
     private fun persistJobResult(ephemeral: Boolean, jobId: Long, stopped: Boolean, failed: String?,
                                  chunks: Int, audioSecs: Double, genMs: Long, output: String, outputUri: String) {
         if (ephemeral) return
+        // every terminal state passes through here, so this is the one place
+        // that disarms auto-resume; only a process death leaves the file behind
+        pendingFile().delete()
+        cancelResumeAlarm(this)
         JobStore.update(this, jobId) {
             it.status = when { stopped -> "stopped"; failed != null -> "failed"; else -> "done" }
             it.chunks = chunks

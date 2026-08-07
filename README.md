@@ -17,6 +17,9 @@ a 10–20 s reference clip.
   re-run with a different voice, play or share the result.
 - **Resumable** — every generated chunk is cached, so a job the OS kills
   mid-run continues from the chunk it reached, on whichever engine you pick.
+  Save jobs go further and resume *themselves*: a dead-man alarm revives the
+  killed engine (same backend, never a silent switch) as long as each attempt
+  makes progress, so a long job survives any number of kills unattended.
 - **Backends** — CPU everywhere; OpenCL on Adreno; Vulkan on everything else.
   The app marks the recommended one for the detected GPU and then stays out of
   the way: it never switches engines behind your back.
@@ -174,7 +177,10 @@ Measured with the 1.7B model, 44-character sentence:
   ~2.5 GB RSS with several GB free — `dumpsys activity exit-info` records
   `reason=3 (LOW_MEMORY)` even for a foreground service on the whitelist, on
   CPU as well as GPU. Nothing in the app prevents it, which is why jobs cache
-  their chunks and resume instead of restarting.
+  their chunks and resume instead of restarting. Samsung honours a sticky
+  service restart exactly once, so save jobs also arm an inexact alarm
+  (re-armed per chunk) whose receiver revives a dead engine — measured ~5 min
+  from kill to continued generation with the app UI closed.
 - **Samsung throttling**: a sustained-CPU background process gets moved to the
   little cores (`/abnormal` cpuset) within ~25 s. Active audio playback exempts
   it, so save-mode jobs play silence while generating.
