@@ -1100,9 +1100,20 @@ class MainActivity : AppCompatActivity() {
             addView(detectNote)
             val stored = when (val b = prefs().getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
             backendGroup.check(when (stored) { "opencl" -> 101; "vulkan" -> 102; else -> 100 })
+            val gpuNote = TextView(context).apply {
+                textSize = 12f
+                text = "A GPU run was killed for memory, so jobs are on CPU. Pick a GPU " +
+                    "option again to retry it."
+                visibility = if (prefs().getBoolean("gpu_unstable", false)) View.VISIBLE else View.GONE
+            }
+            addView(gpuNote)
             backendGroup.setOnCheckedChangeListener { _, id ->
-                prefs().edit().putString("backend",
-                    when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }).apply()
+                val chosen = when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }
+                // choosing a GPU again is the explicit retry that clears the
+                // memory-kill lockout the engine set
+                prefs().edit().putString("backend", chosen)
+                    .putBoolean("gpu_unstable", false).apply()
+                gpuNote.visibility = View.GONE
             }
             thread {
                 val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")

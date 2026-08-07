@@ -1,6 +1,5 @@
 package com.maxfridbe.ttsrunner
 
-import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
@@ -12,13 +11,15 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
 
 /** The "send to" target: receives shared text / URLs / selected text, cleans
  *  it (fetching + extracting the article when a URL was shared), then pops a
  *  voice selector and hands off to TtsService. Dialog-themed so it floats
- *  over the sharing app. */
-class ShareActivity : Activity() {
+ *  over the sharing app; AppCompat so the Material dialog theme resolves the
+ *  same way it does in MainActivity. */
+class ShareActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var preview: TextView
@@ -42,7 +43,15 @@ class ShareActivity : Activity() {
         })
         status = TextView(this).apply { text = "Cleaning text…" }
         root.addView(status)
-        preview = TextView(this).apply { maxLines = 4; setPadding(0, pad / 2, 0, pad / 2) }
+        // enough of the extraction to judge whether the readability pass got
+        // the article and not the navigation
+        preview = TextView(this).apply {
+            maxLines = 8
+            textSize = 13f
+            alpha = 0.8f
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, pad / 2, 0, pad / 2)
+        }
         root.addView(preview)
         root.addView(ProgressBar(this).apply { isIndeterminate = true; id = PROGRESS_ID })
         voices = RadioGroup(this)
@@ -90,6 +99,8 @@ class ShareActivity : Activity() {
                     return@runOnUiThread
                 }
                 cleaned = result
+                DebugLog.log(this, "ShareActivity",
+                    "extracted ${result.text.length} chars | ${result.text.take(140)} … ${result.text.takeLast(140)}")
                 val words = result.text.split(Regex("\\s+")).size
                 status.text = listOfNotNull(result.title, "$words words · ~${words / 150} min").joinToString(" — ")
                 preview.text = result.text.take(300)
@@ -116,7 +127,7 @@ class ShareActivity : Activity() {
         val def = VoiceStore.defaultVoice(this)
         for ((i, v) in list.withIndex()) {
             voices.addView(RadioButton(this).apply {
-                text = v.name
+                text = "${VoiceStore.icon(this@ShareActivity, v.name)}  ${v.name}"
                 id = i
                 isChecked = v.name == def?.name
             })

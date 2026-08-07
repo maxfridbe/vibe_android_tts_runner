@@ -188,11 +188,18 @@ class TtsService : Service() {
             DebugLog.log(this, "TtsService", "opencl requested but ${model.id} is not gpu-capable; using cpu")
             broadcast("note", 0, 0, "OpenCL GPU needs the Q4_0 model — using CPU")
         }
+        // A GPU run that vanished mid-generation was almost certainly an lmkd
+        // kill (no tombstone, rss ~2.5 GB): the GPU backend needs a second copy
+        // of the weights the CPU path gets for free from the mmap. Falling back
+        // for one run only meant the next one walked into the same kill, so the
+        // fallback sticks until the user re-picks a GPU in Settings.
+        val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
         if (marker.exists() && backend != "cpu") {
-            backend = "cpu"
-            DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; falling back to cpu")
-            broadcast("note", 0, 0, "Previous run died mid-generation — using CPU for this run")
+            prefs.edit().putBoolean("gpu_unstable", true).apply()
+            DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; pinning cpu")
+            broadcast("note", 0, 0, "The GPU run ran out of memory — using CPU until you pick a GPU again in Settings")
         }
+        if (backend != "cpu" && prefs.getBoolean("gpu_unstable", false)) backend = "cpu"
         marker.writeText(backend)
         DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
         // design mode runs with NO speaker reference: the model invents a

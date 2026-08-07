@@ -4,9 +4,15 @@
         <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
     </style>
 
-    <!-- floating share-sheet target -->
-    <style name="Theme.TTSRunner.Dialog" parent="ThemeOverlay.Material3.Dialog.Alert">
-        <item name="android:windowIsFloating">true</item>
+    <!-- Floating share-sheet target. Must be a full theme, not a
+         ThemeOverlay: an overlay leaves framework attributes unset, and on
+         One UI that surfaced as "Failed to resolve attribute at index 6"
+         (android:textColorHighlight) the moment ShareActivity built its first
+         TextView, so every share crashed. -->
+    <style name="Theme.TTSRunner.Dialog" parent="Theme.Material3.DayNight.Dialog.Alert">
         <item name="android:windowCloseOnTouchOutside">false</item>
+        <!-- the activity draws its own heading; the window title would repeat it -->
+        <item name="windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
     </style>
 </resources>
