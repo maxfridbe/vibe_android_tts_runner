@@ -15,8 +15,11 @@ a 10–20 s reference clip.
   cached.
 - **Jobs** — history with per-job stats (audio length, generation time, RTF),
   re-run with a different voice, play or share the result.
+- **Resumable** — every generated chunk is cached, so a job the OS kills
+  mid-run continues from the chunk it reached, on whichever engine you pick.
 - **Backends** — CPU everywhere; OpenCL on Adreno; Vulkan on everything else.
-  The app detects the GPU and marks the recommended one.
+  The app marks the recommended one for the detected GPU and then stays out of
+  the way: it never switches engines behind your back.
 
 Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase): the build
 is fully containerized, so the host needs only podman or docker — no Android
@@ -167,6 +170,11 @@ Measured with the 1.7B model, 44-character sentence:
 - **Memory**: weights are mmap'd (file-backed), which keeps a 1.5 GB model off
   the reclaim path; without it phones thrash or get lmkd-killed. The engine
   falls back to a plain read if an mmap load fails (16 KB-page devices).
+- **lmkd kills**: on an 8 GB S24 FE the engine is still killed mid-job at
+  ~2.5 GB RSS with several GB free — `dumpsys activity exit-info` records
+  `reason=3 (LOW_MEMORY)` even for a foreground service on the whitelist, on
+  CPU as well as GPU. Nothing in the app prevents it, which is why jobs cache
+  their chunks and resume instead of restarting.
 - **Samsung throttling**: a sustained-CPU background process gets moved to the
   little cores (`/abnormal` cpuset) within ~25 s. Active audio playback exempts
   it, so save-mode jobs play silence while generating.

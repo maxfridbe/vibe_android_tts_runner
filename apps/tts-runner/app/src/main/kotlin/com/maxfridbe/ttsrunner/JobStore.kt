@@ -21,6 +21,7 @@ object JobStore {
         var save: Boolean,
         var status: String,         // running | done | stopped | failed
         var chunks: Int = 0,
+        var chunksTotal: Int = 0,
         var audioSecs: Double = 0.0,
         var genMs: Long = 0,
         var output: String = "",    // "Music/TTS Runner/x.m4a" for save jobs
@@ -35,14 +36,30 @@ object JobStore {
 
     fun list(ctx: Context): List<Job> = synchronized(lock) { load(ctx) }
 
-    /** A job left "running" by a killed engine process would sit there
-     *  forever; the UI calls this on start so the history tells the truth. */
-    fun reconcile(ctx: Context, engineAlive: Boolean) = synchronized(lock) {
+    /** A job left "running" by a killed engine process would sit there forever.
+     *  Called by the engine when it finds its in-flight marker at startup — the
+     *  one place that knows no job survived. */
+    fun failRunning(ctx: Context, reason: String) = synchronized(lock) {
         val jobs = load(ctx)
         var changed = false
-        for ((i, j) in jobs.withIndex()) {
-            // the newest job may legitimately still be running
-            if (j.status == "running" && !(i == 0 && engineAlive)) {
+        for (j in jobs) {
+            if (j.status == "running") {
+                j.status = "failed"
+                if (j.error.isBlank()) j.error = reason
+                changed = true
+            }
+        }
+        if (changed) store(ctx, jobs)
+    }
+
+    /** UI-side safety net: with no engine process at all, nothing can be
+     *  running, whatever the file says. */
+    fun reconcile(ctx: Context, engineAlive: Boolean) = synchronized(lock) {
+        if (engineAlive) return@synchronized
+        val jobs = load(ctx)
+        var changed = false
+        for (j in jobs) {
+            if (j.status == "running") {
                 j.status = "failed"
                 if (j.error.isBlank()) j.error = "interrupted (app or engine stopped)"
                 changed = true
@@ -68,6 +85,24 @@ object JobStore {
         val jobs = load(ctx)
         jobs.removeAll { it.id == id }
         store(ctx, jobs)
+        jobDir(ctx, id).deleteRecursively()
+    }
+
+    /** Per-job chunk cache (raw PCM, one file per chunk). Present only while a
+     *  job is unfinished — that is what makes it resumable. */
+    fun jobDir(ctx: Context, id: Long) = File(ctx.filesDir, "jobs/$id")
+
+    /** How many chunks of this job are already generated on disk. */
+    fun cachedChunks(ctx: Context, id: Long): Int =
+        jobDir(ctx, id).listFiles { f -> f.isFile && f.length() > 0 }?.size ?: 0
+
+    /** Drop chunk caches for jobs that no longer exist (or already finished). */
+    fun sweepCaches(ctx: Context) = synchronized(lock) {
+        val keep = load(ctx).filter { it.status == "failed" || it.status == "stopped" || it.status == "running" }
+            .map { it.id.toString() }.toSet()
+        File(ctx.filesDir, "jobs").listFiles()?.forEach {
+            if (it.name !in keep) it.deleteRecursively()
+        }
     }
 
     private fun load(ctx: Context): MutableList<Job> = try {
@@ -84,6 +119,7 @@ object JobStore {
                 save = o.optBoolean("save"),
                 status = o.optString("status", "done"),
                 chunks = o.optInt("chunks"),
+                chunksTotal = o.optInt("chunksTotal"),
                 audioSecs = o.optDouble("audioSecs", 0.0),
                 genMs = o.optLong("genMs"),
                 output = o.optString("output"),
@@ -105,6 +141,7 @@ object JobStore {
                     .put("voice", j.voice).put("model", j.model)
                     .put("backend", j.backend).put("save", j.save)
                     .put("status", j.status).put("chunks", j.chunks)
+                    .put("chunksTotal", j.chunksTotal)
                     .put("audioSecs", j.audioSecs).put("genMs", j.genMs)
                     .put("output", j.output).put("outputUri", j.outputUri)
                     .put("error", j.error))

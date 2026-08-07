@@ -42,6 +42,7 @@ class TtsService : Service() {
         const val EXTRA_DESIGN = "design"    // true: no speaker ref — roll a fresh random voice
         const val EXTRA_SEED = "seed"        // base seed; 0 = default
         const val EXTRA_INSTRUCT = "instruct" // voice description (VoiceDesign model)
+        const val EXTRA_JOB_ID = "job_id"    // resume this job: keep its id and its cached chunks
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -74,6 +75,18 @@ class TtsService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Speech generation", NotificationManager.IMPORTANCE_LOW)
         )
+        // This process starting with the in-flight marker still on disk means
+        // the previous one died mid-job (native crash or an OS kill — nothing
+        // else skips the finally). Only this process can say that with
+        // authority: the UI binding to us is itself what restarts us, so it
+        // cannot tell a live job from a resurrected process.
+        val marker = java.io.File(filesDir, "job-inflight")
+        if (marker.exists()) {
+            DebugLog.log(this, "TtsService", "engine restarted with backend=${marker.readText()} in flight; job died")
+            JobStore.failRunning(this, "interrupted — the engine process was killed mid-job")
+            marker.delete()
+            sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName).putExtra("state", "jobs"))
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -95,14 +108,16 @@ class TtsService : Service() {
                 val design = intent.getBooleanExtra(EXTRA_DESIGN, false)
                 val seed = intent.getIntExtra(EXTRA_SEED, 0)
                 val instruct = intent.getStringExtra(EXTRA_INSTRUCT) ?: ""
-                startJob(text, title, voice, backend, save, preview, design, seed, instruct)
+                val resumeId = intent.getLongExtra(EXTRA_JOB_ID, 0L)
+                startJob(text, title, voice, backend, save, preview, design, seed, instruct, resumeId)
             }
         }
         return START_NOT_STICKY
     }
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean,
-                         preview: Boolean = false, design: Boolean = false, seed: Int = 0, instruct: String = "") {
+                         preview: Boolean = false, design: Boolean = false, seed: Int = 0,
+                         instruct: String = "", resumeId: Long = 0L) {
         // one job at a time; a new share replaces the current playback. The
         // takeover is asynchronous: the previous thread is signalled here and
         // the NEW thread waits for it without a deadline (a 3s join on this
@@ -127,7 +142,7 @@ class TtsService : Service() {
                 previous?.join()
                 stopRequested = false
                 TtsEngine.nResetCancel()
-                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct)
+                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct, resumeId)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -154,7 +169,8 @@ class TtsService : Service() {
     private val EOS = ByteArray(0)
 
     private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean,
-                       preview: Boolean, design: Boolean, seed: Int, instructWanted: String) {
+                       preview: Boolean, design: Boolean, seed: Int, instructWanted: String,
+                       resumeId: Long = 0L) {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
@@ -188,18 +204,13 @@ class TtsService : Service() {
             DebugLog.log(this, "TtsService", "opencl requested but ${model.id} is not gpu-capable; using cpu")
             broadcast("note", 0, 0, "OpenCL GPU needs the Q4_0 model — using CPU")
         }
-        // A GPU run that vanished mid-generation was almost certainly an lmkd
-        // kill (no tombstone, rss ~2.5 GB): the GPU backend needs a second copy
-        // of the weights the CPU path gets for free from the mmap. Falling back
-        // for one run only meant the next one walked into the same kill, so the
-        // fallback sticks until the user re-picks a GPU in Settings.
-        val prefs = getSharedPreferences("ttsrunner", MODE_PRIVATE)
-        if (marker.exists() && backend != "cpu") {
-            prefs.edit().putBoolean("gpu_unstable", true).apply()
-            DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run; pinning cpu")
-            broadcast("note", 0, 0, "The GPU run ran out of memory — using CPU until you pick a GPU again in Settings")
+        // A previous run that vanished mid-generation left this marker behind
+        // (process death: native crash or an lmkd kill). It is reported, not
+        // acted on — the backend is the user's choice, and a failed job is
+        // resumable with whichever backend they pick.
+        if (marker.exists()) {
+            DebugLog.log(this, "TtsService", "previous job with backend=${marker.readText()} died mid-run")
         }
-        if (backend != "cpu" && prefs.getBoolean("gpu_unstable", false)) backend = "cpu"
         marker.writeText(backend)
         DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
         // design mode runs with NO speaker reference: the model invents a
@@ -213,39 +224,49 @@ class TtsService : Service() {
 
         // Register the job before loading the model: the UI switches to the
         // Jobs tab the moment a job is added, and a cold load takes ~20 s —
-        // an empty list there would look like nothing happened.
-        val jobId = System.currentTimeMillis()
+        // an empty list there would look like nothing happened. A resumed job
+        // keeps its id, which is what makes its cached chunks findable.
         val ephemeral = preview || design   // previews/design rolls stay out of job history
+        val jobId = if (resumeId != 0L) resumeId else System.currentTimeMillis()
+        val chunks = Chunker.split(text)
+        DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
         if (!ephemeral) {
-            JobStore.add(this, JobStore.Job(
+            if (resumeId != 0L) JobStore.update(this, jobId) {
+                it.status = "running"; it.backend = backend; it.error = ""; it.chunksTotal = chunks.size
+            } else JobStore.add(this, JobStore.Job(
                 id = jobId, title = title, text = text, voice = voice!!.name,
-                model = model.id, backend = backend, save = save, status = "running"))
+                model = model.id, backend = backend, save = save, status = "running",
+                chunksTotal = chunks.size))
         }
         fun abort(reason: String) {
             persistJobResult(ephemeral, jobId, false, reason, 0, 0.0, 0, "", "")
             fail(reason)
         }
+        if (chunks.isEmpty()) { abort("Nothing to speak"); return }
 
-        if (!ensureLoaded(model, backend)) {
-            if (backend == "cpu") {
-                abort("Model load failed: ${TtsEngine.nLastError()}"); return
-            }
-            DebugLog.log(this, "TtsService", "GPU load failed (${TtsEngine.nLastError()}); falling back to cpu")
-            broadcast("note", 0, 0, "GPU init failed — using CPU")
-            backend = "cpu"
-            marker.writeText(backend)
-            if (!ephemeral) JobStore.update(this, jobId) { it.backend = "cpu" }
-            if (!ensureLoaded(model, backend)) {
-                abort("Model load failed: ${TtsEngine.nLastError()}"); return
-            }
+        // Chunk cache: every generated chunk is kept as raw PCM under
+        // jobs/<id>/, so a job that dies (or is stopped) resumes from the first
+        // missing chunk instead of starting over. Cleared on success.
+        val jobDir = if (ephemeral) null else JobStore.jobDir(this, jobId).apply { mkdirs() }
+        fun chunkFile(i: Int) = jobDir?.let { java.io.File(it, "chunk_%04d.pcm".format(i)) }
+        val cached = (chunks.indices).count { chunkFile(it)?.let { f -> f.exists() && f.length() > 0 } == true }
+        if (cached > 0) {
+            DebugLog.log(this, "TtsService", "resuming with $cached/${chunks.size} chunks already generated")
+            broadcast("note", 0, 0, "Resuming: $cached of ${chunks.size} chunks already generated")
+        }
+
+        // The backend is the user's choice: a load failure fails the job with
+        // the reason, so they can resume on another backend, rather than being
+        // silently moved to CPU.
+        if (cached < chunks.size && !ensureLoaded(model, backend)) {
+            val why = TtsEngine.nLastError().ifBlank { "unknown error" }
+            abort(if (backend == "cpu") "Model load failed: $why"
+                  else "$backend failed to start: $why — resume on CPU or pick another engine")
+            return
         }
         // ETA is derived from generation speed, so the clock starts after the
         // one-off model load
         jobStartMs = System.currentTimeMillis()
-
-        val chunks = Chunker.split(text)
-        DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
-        if (chunks.isEmpty()) { abort("Nothing to speak"); return }
 
         val queue = LinkedBlockingQueue<ByteArray>(2)
         val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }
@@ -274,45 +295,50 @@ class TtsService : Service() {
             update(notif(title, "Chunk ${i + 1}/${chunks.size}", i * 1000 / chunks.size, 1000))
             broadcast("generating", i, chunks.size, chunk.take(80))
             val t0 = System.currentTimeMillis()
-            val onFrames = { framesDone: Int, framesMax: Int ->
-                reportProgress(title, i, chunks.size, framesDone, framesMax)
-            }
-            // design rolls skip the plausibility guard: any voice is valid, and
-            // re-rolling a design triples an already slow job for nothing
-            var pcm = if (design) generateOnce(chunk, "", instruct, seed, onFrames)
-                      else generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
-            if (pcm == null && !stopRequested && backend != "cpu") {
-                // a caught native exception drops the engine; retry this chunk
-                // on CPU in-process instead of dying and using the marker path
-                DebugLog.log(this, "TtsService", "GPU generation failed (${TtsEngine.nLastError()}); retrying chunk on CPU")
-                broadcast("note", 0, 0, "GPU generation failed — switching to CPU")
-                backend = "cpu"
-                marker.writeText(backend)
-                loadedKey = null
-                if (ensureLoaded(model, backend)) {
-                    pcm = generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
+            val cf = chunkFile(i)
+            // already generated by an earlier attempt: replay it, don't pay for
+            // it twice
+            var pcm = if (cf != null && cf.exists() && cf.length() > 0)
+                runCatching { cf.readBytes() }.getOrNull() else null
+            val reused = pcm != null
+            if (!reused) {
+                val onFrames = { framesDone: Int, framesMax: Int ->
+                    reportProgress(title, i, chunks.size, framesDone, framesMax)
                 }
-            }
-            if (pcm == null) {
-                if (!stopRequested) failed = TtsEngine.nLastError().ifBlank { "generation failed" }
-                DebugLog.log(this, "TtsService", "chunk ${i + 1} FAILED after ${System.currentTimeMillis() - t0} ms: $failed")
-                break
+                // design rolls skip the plausibility guard: any voice is valid, and
+                // re-rolling a design triples an already slow job for nothing
+                pcm = if (design) generateOnce(chunk, "", instruct, seed, onFrames)
+                      else generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
+                if (pcm == null) {
+                    if (!stopRequested) {
+                        val why = TtsEngine.nLastError().ifBlank { "generation failed" }
+                        // the engine chose to stay on this backend; say so and let
+                        // the job be resumed on another one
+                        failed = if (backend == "cpu") why
+                                 else "$why (on $backend) — resume on CPU to finish"
+                    }
+                    DebugLog.log(this, "TtsService", "chunk ${i + 1} FAILED after ${System.currentTimeMillis() - t0} ms: $failed")
+                    break
+                }
+                runCatching { cf?.writeBytes(pcm!!) }
+                genMs += System.currentTimeMillis() - t0
             }
             DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
-                "${"%.1f".format(pcm.size / 2.0 / SAMPLE_RATE)}s audio in ${System.currentTimeMillis() - t0} ms")
-            audioSecs += pcm.size / 2.0 / SAMPLE_RATE
-            genMs += System.currentTimeMillis() - t0
+                "${"%.1f".format(pcm!!.size / 2.0 / SAMPLE_RATE)}s audio in " +
+                (if (reused) "0 ms (cached)" else "${System.currentTimeMillis() - t0} ms"))
+            val bytes = pcm!!
+            audioSecs += bytes.size / 2.0 / SAMPLE_RATE
             chunksDone++
-            runCatching { pcmFile().appendBytes(pcm) }
+            runCatching { pcmFile().appendBytes(bytes) }
             if (saver != null) {
                 try {
-                    saver.write(pcm)
+                    saver.write(bytes)
                 } catch (e: Exception) {
                     DebugLog.log(this, "TtsService", "saver.write failed", e)
                     failed = "Save failed: ${e.message}"; break
                 }
             } else {
-                queue.put(pcm)
+                queue.put(bytes)
             }
         }
         if (player != null) {
@@ -354,6 +380,7 @@ class TtsService : Service() {
                 // persist first: the UI rebuilds its Jobs list from this file
                 // as soon as the broadcast lands
                 persistJobResult(ephemeral, jobId, stopRequested, failed, chunksDone, audioSecs, genMs, output, outputUri)
+                jobDir?.deleteRecursively()   // finished: the chunk cache is dead weight
                 broadcast("saved", chunks.size, chunks.size, "$path — $stats")
                 update(notif(title, "Saved to $path", 0, 0))
             }
@@ -365,6 +392,7 @@ class TtsService : Service() {
                     }
                 }
                 persistJobResult(ephemeral, jobId, stopRequested, failed, chunksDone, audioSecs, genMs, output, outputUri)
+                jobDir?.deleteRecursively()
                 broadcast(if (design) "designed" else "done", chunks.size, chunks.size, stats)
             }
         }

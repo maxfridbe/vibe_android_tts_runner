@@ -74,6 +74,20 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             intent ?: return
             val state = intent.getStringExtra("state")
+            // Engine-side bookkeeping: it restarted and found a dead job. That
+            // job's last broadcast was a busy one, so the pane is still showing
+            // its progress — a ghost of work that stopped. Clear it and reload
+            // the list.
+            if (state == "jobs") {
+                ui.removeCallbacks(hideStatusPane)
+                statusPane.visibility = View.GONE
+                runStatus.text = "Idle"
+                runProgress.progress = 0
+                etaText.text = ""
+                stopBtn.visibility = View.GONE
+                refreshJobsIfChanged(force = true)
+                return
+            }
             val chunk = intent.getIntExtra("chunk", 0)
             val total = intent.getIntExtra("total", 0)
             val message = intent.getStringExtra("message") ?: ""
@@ -921,10 +935,10 @@ class MainActivity : AppCompatActivity() {
     private var jobsSig = ""
     private var lastJobsCheck = 0L
 
-    private fun refreshJobsIfChanged() {
+    private fun refreshJobsIfChanged(force: Boolean = false) {
         if (currentTab != TAB_JOBS || !::jobsList.isInitialized) return
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastJobsCheck < 1500) return
+        if (!force && now - lastJobsCheck < 1500) return
         lastJobsCheck = now
         if (jobsSignature() != jobsSig) rebuildJobs()
     }
@@ -942,6 +956,7 @@ class MainActivity : AppCompatActivity() {
                 .runningAppProcesses?.any { it.processName.endsWith(":engine") } == true
         }.getOrDefault(false)
         JobStore.reconcile(this, engineAlive)
+        JobStore.sweepCaches(this)
         val lf = lastAudio()
         if (lf.exists() && lf.length() > 44) thread { waveform.loadWav(lf) }
         jobsList.removeAllViews()
@@ -1018,11 +1033,23 @@ class MainActivity : AppCompatActivity() {
                     }
                     addView(runningBar)
                 }
+                val cachedChunks = if (running) 0 else JobStore.cachedChunks(this@MainActivity, j.id)
+                if (cachedChunks > 0) {
+                    addView(Button(context).apply {
+                        text = "Resume — $cachedChunks${if (j.chunksTotal > 0) "/${j.chunksTotal}" else ""} chunks kept"
+                        setOnClickListener { resumeDialog(j, cachedChunks) }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    })
+                }
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     addView(Button(context).apply {
-                        text = "Re-run"
-                        setOnClickListener { rerunJob(j, j.voice) }
+                        text = if (cachedChunks > 0) "Start over" else "Re-run"
+                        setOnClickListener {
+                            if (cachedChunks > 0) JobStore.jobDir(this@MainActivity, j.id).deleteRecursively()
+                            rerunJob(j, j.voice)
+                        }
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
                         text = "Other voice…"
@@ -1048,6 +1075,62 @@ class MainActivity : AppCompatActivity() {
         if (jobsList.childCount == 0) {
             jobsList.addView(TextView(this).apply { text = "No jobs yet."; alpha = 0.6f })
         }
+    }
+
+    /** A failed or stopped job keeps its generated chunks, so resuming only
+     *  pays for what is missing. The engine is picked here, not guessed: a job
+     *  that died on the GPU is exactly when CPU is worth choosing. */
+    private fun resumeDialog(j: JobStore.Job, cachedChunks: Int) {
+        val options = listOf(
+            "CPU" to "cpu",
+            "GPU · Vulkan" to "vulkan",
+            "GPU · OpenCL" to "opencl",
+        )
+        val left = if (j.chunksTotal > 0) "${j.chunksTotal - cachedChunks} of ${j.chunksTotal} chunks left"
+                   else "$cachedChunks chunks kept"
+        // a custom view, not setItems: an AlertDialog shows either a message or
+        // a list, never both, and the chunk count is the reason to read the list
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+            addView(TextView(context).apply {
+                text = "$left. Generated audio is reused as-is."
+                textSize = 14f; alpha = 0.8f
+                setPadding(0, 0, 0, dp(8))
+            })
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Resume with which engine?")
+            .setView(ScrollView(this).apply { addView(col) })
+            .setNegativeButton("Cancel", null)
+            .create()
+        for ((label, id) in options) {
+            col.addView(Button(this).apply {
+                text = if (id == j.backend) "$label — same as the failed run" else label
+                setOnClickListener { dialog.dismiss(); resumeJob(j, id) }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(6) }
+            })
+        }
+        dialog.show()
+    }
+
+    private fun resumeJob(j: JobStore.Job, backend: String) {
+        val v = VoiceStore.list(this).find { it.name == j.voice }
+        if (v == null) { toast("Voice “${j.voice}” is gone — use Start over with another voice"); return }
+        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        startForegroundService(Intent(this, TtsService::class.java)
+            .setAction(TtsService.ACTION_SPEAK)
+            .putExtra(TtsService.EXTRA_TEXT, j.text)
+            .putExtra(TtsService.EXTRA_TITLE, j.title)
+            .putExtra(TtsService.EXTRA_VOICE, v.name)
+            .putExtra(TtsService.EXTRA_BACKEND, backend)
+            .putExtra(TtsService.EXTRA_SAVE, j.save)
+            .putExtra(TtsService.EXTRA_JOB_ID, j.id))
+        toast("Resuming on $backend")
+        selectTab(TAB_JOBS)
+        ui.postDelayed({ refreshJobsIfChanged() }, 500)
     }
 
     private fun rerunJob(j: JobStore.Job, voiceName: String) {
@@ -1100,20 +1183,9 @@ class MainActivity : AppCompatActivity() {
             addView(detectNote)
             val stored = when (val b = prefs().getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
             backendGroup.check(when (stored) { "opencl" -> 101; "vulkan" -> 102; else -> 100 })
-            val gpuNote = TextView(context).apply {
-                textSize = 12f
-                text = "A GPU run was killed for memory, so jobs are on CPU. Pick a GPU " +
-                    "option again to retry it."
-                visibility = if (prefs().getBoolean("gpu_unstable", false)) View.VISIBLE else View.GONE
-            }
-            addView(gpuNote)
             backendGroup.setOnCheckedChangeListener { _, id ->
-                val chosen = when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }
-                // choosing a GPU again is the explicit retry that clears the
-                // memory-kill lockout the engine set
-                prefs().edit().putString("backend", chosen)
-                    .putBoolean("gpu_unstable", false).apply()
-                gpuNote.visibility = View.GONE
+                prefs().edit().putString("backend",
+                    when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }).apply()
             }
             thread {
                 val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")
@@ -1132,7 +1204,8 @@ class MainActivity : AppCompatActivity() {
                         "vulkan" -> vkBtn.text = "${vkBtn.text}  ★ recommended"
                         else -> cpuBtn.text = "${cpuBtn.text}  ★ recommended"
                     }
-                    detectNote.text = "Detected GPU: $gpuName. A GPU engine that fails to start falls back to CPU automatically."
+                    detectNote.text = "Detected GPU: $gpuName. Your choice is kept: a job that fails " +
+                        "on one engine can be resumed on another from the Jobs tab."
                 }
             }
             val pm = getSystemService(android.os.PowerManager::class.java)
