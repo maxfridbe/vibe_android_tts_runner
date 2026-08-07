@@ -58,6 +58,8 @@ class RecordActivity : AppCompatActivity() {
     private var recThread: Thread? = null
     private var player: android.media.MediaPlayer? = null
     private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+    private lateinit var denoiseBox: android.widget.CheckBox
+    private val effects = mutableListOf<android.media.audiofx.AudioEffect>()
 
     // karaoke state: char range + syllable weight per readable word
     private data class Word(val start: Int, val end: Int, val weight: Int)
@@ -67,6 +69,7 @@ class RecordActivity : AppCompatActivity() {
     @Volatile private var spokenMs = 0L
     @Volatile private var totalMs = 0L
     private var noiseFloor = 300.0
+    private var hangoverMs = 0
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun themeColor(attr: Int): Int {
@@ -122,6 +125,17 @@ class RecordActivity : AppCompatActivity() {
         }
         meterRow.addView(elapsedText)
         col.addView(meterRow)
+
+        denoiseBox = android.widget.CheckBox(this).apply {
+            text = "Clean up mic input (noise suppression + level)"
+            isChecked = prefs().getBoolean("record_denoise", false)
+            setOnCheckedChangeListener { _, on ->
+                prefs().edit().putBoolean("record_denoise", on).apply()
+                if (recording) Toast.makeText(this@RecordActivity,
+                    "Applies to the next recording", Toast.LENGTH_SHORT).show()
+            }
+        }
+        col.addView(denoiseBox)
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         recordBtn = Button(this).apply {
@@ -240,7 +254,7 @@ class RecordActivity : AppCompatActivity() {
         }
         stopPlayback()
         wavFile().delete()
-        spokenMs = 0; totalMs = 0; noiseFloor = 300.0
+        spokenMs = 0; totalMs = 0; noiseFloor = 300.0; hangoverMs = 0
         rebuildPassage()
         val minBuf = AudioRecord.getMinBufferSize(RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -254,6 +268,23 @@ class RecordActivity : AppCompatActivity() {
             return
         }
         recorder = rec
+        // optional platform cleanup on the capture session: hardware/OS noise
+        // suppression, echo cancel and gain levelling. Off by default — the
+        // speaker encoder generally prefers raw audio, but a noisy room can
+        // hurt more than the processing does.
+        if (denoiseBox.isChecked) {
+            runCatching {
+                if (android.media.audiofx.NoiseSuppressor.isAvailable())
+                    android.media.audiofx.NoiseSuppressor.create(rec.audioSessionId)
+                        ?.also { it.enabled = true; effects.add(it) }
+                if (android.media.audiofx.AcousticEchoCanceler.isAvailable())
+                    android.media.audiofx.AcousticEchoCanceler.create(rec.audioSessionId)
+                        ?.also { it.enabled = true; effects.add(it) }
+                if (android.media.audiofx.AutomaticGainControl.isAvailable())
+                    android.media.audiofx.AutomaticGainControl.create(rec.audioSessionId)
+                        ?.also { it.enabled = true; effects.add(it) }
+            }
+        }
         recording = true
         recordBtn.text = "Stop"
         playBtn.isEnabled = false
@@ -274,9 +305,17 @@ class RecordActivity : AppCompatActivity() {
                 var sum = 0.0
                 for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
                 val rms = sqrt(sum / n)
-                val speaking = rms > max(500.0, noiseFloor * 3)
-                if (!speaking) noiseFloor = noiseFloor * 0.95 + rms * 0.05
-                if (speaking) spokenMs += n * 1000L / RATE
+                // Forgiving VAD — the guide getting stuck mid-passage is worse
+                // than it running slightly ahead: low threshold, floor adapts
+                // downward fast and upward only slowly, and brief gaps between
+                // words keep counting as speech (hangover).
+                val speaking = rms > max(250.0, noiseFloor * 2)
+                noiseFloor = if (rms < noiseFloor) noiseFloor * 0.7 + rms * 0.3
+                             else min(noiseFloor * 1.005, 2000.0)
+                if (speaking) hangoverMs = 400
+                val counts = speaking || hangoverMs > 0
+                if (!speaking && hangoverMs > 0) hangoverMs -= (n * 1000 / RATE).toInt()
+                if (counts) spokenMs += n * 1000L / RATE
                 totalMs += n * 1000L / RATE
                 ui.post {
                     levelBar.progress = min(100.0, rms / 60.0).toInt()
@@ -300,7 +339,13 @@ class RecordActivity : AppCompatActivity() {
         runCatching { recorder?.stop() }
         runCatching { recorder?.release() }
         recorder = null
+        effects.forEach { runCatching { it.release() } }
+        effects.clear()
         recThread?.join(2000)
+        // whatever the pace guide thought, the take is over: show the whole
+        // passage as read rather than leaving it stuck mid-word
+        spokenMs = Long.MAX_VALUE / 2
+        updateHighlight()
     }
 
     private fun writeWav(f: File, pcm: ByteArray, rate: Int) {
