@@ -64,9 +64,12 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
 3. Or use the **New job** tab directly: paste text, pick a voice, Listen or
    Save.
 
-Shared URLs are fetched and run through a readability pass (densest
-`<article>`/`<p>` container); markdown noise, inline URLs and `[17]`-style
-citations are stripped before speaking.
+Shared URLs are fetched and run through a readability pass: page furniture
+(nav, share bars, cookie banners, comments, related rails) is dropped, the
+article container is picked by prose length minus twice its link text, and
+everything past *References* / *See also* is ignored. Redirects — including
+`<meta http-equiv=refresh>` stubs — are followed. Markdown noise, inline URLs,
+emoji and `[17]`-style citations are stripped before speaking.
 
 ## Models
 
