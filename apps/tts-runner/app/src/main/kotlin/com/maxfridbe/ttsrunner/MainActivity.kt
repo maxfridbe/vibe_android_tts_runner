@@ -395,6 +395,8 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         registerReceiver(statusReceiver, IntentFilter(TtsService.STATUS_BROADCAST), RECEIVER_NOT_EXPORTED)
         ui.post(memTicker)
+        // a voice may have been recorded while we were paused (RecordActivity)
+        if (currentTab == TAB_VOICES && tabs.containsKey(TAB_VOICES)) rebuildVoices()
     }
 
     override fun onPause() {
@@ -627,8 +629,13 @@ class MainActivity : AppCompatActivity() {
     private fun buildVoicesTab(): View {
         val (scroll, col) = page()
         col.title("Voices")
-        col.caption("A voice is 10–20 s of clean speech. Previews are generated once per model and cached.")
+        col.caption("A voice is 10–20 s of clean speech. Record one, import a recording, or design one. " +
+            "Previews are generated once per model and cached.")
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        topRow.addView(Button(this).apply {
+            text = "Record"
+            setOnClickListener { startActivity(Intent(this@MainActivity, RecordActivity::class.java)) }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         topRow.addView(Button(this).apply {
             text = "Import"
             setOnClickListener {
@@ -637,9 +644,9 @@ class MainActivity : AppCompatActivity() {
                         .addCategory(Intent.CATEGORY_OPENABLE)
                         .setType("audio/*"), REQ_IMPORT)
             }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         topRow.addView(Button(this).apply {
-            text = "Design new voice"
+            text = "Design"
             setOnClickListener { designVoiceDialog() }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         col.addView(topRow)
