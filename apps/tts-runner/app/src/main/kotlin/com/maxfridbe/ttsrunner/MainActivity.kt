@@ -155,22 +155,6 @@ class MainActivity : AppCompatActivity() {
         // just as interesting as one started on the New job tab)
         statusPane = buildStatusPane().noStateSave()
         statusPane.visibility = View.GONE
-        // tab-swipe indicator: one slot per tab, tracks the drag and settles
-        // on the tab the release lands on
-        swipeBar = View(this).apply {
-            setBackgroundColor(themeColor(com.google.android.material.R.attr.colorPrimary))
-            alpha = 0f
-        }
-        swipeTrack = FrameLayout(this).apply {
-            addView(swipeBar, FrameLayout.LayoutParams(0, dp(3)))
-            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                val slot = width / tabOrder.size
-                if (slot > 0 && swipeBar.layoutParams.width != slot) {
-                    swipeBar.layoutParams = swipeBar.layoutParams.also { it.width = slot }
-                    swipeBar.translationX = slotIndex() * slot.toFloat()
-                }
-            }
-        }
         val contentWithMeter = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(FrameLayout(context).apply {
@@ -179,7 +163,6 @@ class MainActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP or Gravity.END))
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(swipeTrack, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)))
             addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         }
 
@@ -209,11 +192,38 @@ class MainActivity : AppCompatActivity() {
             bottom.setOnItemSelectedListener { showTab(it.itemId); true }
             bottom.selectedItemId = currentTab
             navSelect = { id -> bottom.selectedItemId = id }
+            // Swipe indicator: one slot per tab, riding the top edge of the
+            // navigation bar so the line sits directly over the tab it points
+            // at. Bottom nav divides its width evenly, so slot = width / tabs.
+            swipeEnabled = true
+            swipeBar = View(this).apply {
+                setBackgroundColor(themeColor(com.google.android.material.R.attr.colorPrimary))
+                alpha = 0f
+            }
+            swipeTrack = FrameLayout(this).apply {
+                // the nav bar carries a Material elevation, so the indicator
+                // needs a higher one to draw over its top edge
+                elevation = dp(16).toFloat()
+                addView(swipeBar, FrameLayout.LayoutParams(0, dp(3)))
+                addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    val slot = width / tabOrder.size
+                    if (slot > 0 && swipeBar.layoutParams.width != slot) {
+                        swipeBar.layoutParams = swipeBar.layoutParams.also { it.width = slot }
+                        swipeBar.translationX = slotIndex() * slot.toFloat()
+                    }
+                }
+            }
+            val navHolder = FrameLayout(this).apply {
+                addView(bottom, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(swipeTrack, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.TOP))
+            }
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(contentWithMeter, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                addView(bottom, LinearLayout.LayoutParams(
+                addView(navHolder, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         }
@@ -258,7 +268,7 @@ class MainActivity : AppCompatActivity() {
         content.addView(v)
         v.noStateSave()
         // keep the swipe indicator in sync with taps on the nav bar too
-        if (!dragging && ::swipeBar.isInitialized && swipeBar.width > 0) {
+        if (swipeEnabled && !dragging && swipeBar.width > 0) {
             swipeBar.translationX = slotIndex() * swipeBar.width.toFloat()
         }
     }
@@ -268,6 +278,11 @@ class MainActivity : AppCompatActivity() {
     private var downX = 0f
     private var downY = 0f
     private var dragging = false
+    /** Only with the bottom navigation bar. On a tablet or an unfolded Fold the
+     *  tabs are a rail on the left, there is nothing for a horizontal indicator
+     *  to line up with, and wide layouts have side-by-side content that a
+     *  swipe-to-switch gesture would fight with. */
+    private var swipeEnabled = false
 
     private fun slotIndex() = tabOrder.indexOf(currentTab).coerceAtLeast(0)
 
@@ -275,6 +290,7 @@ class MainActivity : AppCompatActivity() {
      *  the content just rides along horizontally and the indicator shows which
      *  tab a release would land on. */
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        if (!swipeEnabled) return super.dispatchTouchEvent(ev)
         when (ev.actionMasked) {
             android.view.MotionEvent.ACTION_DOWN -> {
                 downX = ev.x; downY = ev.y; dragging = false
@@ -417,10 +433,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Compact icon button: rows carry up to five of these next to a name, so
+     *  the default ImageButton padding would starve the label. */
     private fun iconBtn(icon: Int, desc: String, action: () -> Unit) = ImageButton(this).apply {
         setImageResource(icon)
         contentDescription = desc
         background = null
+        minimumWidth = dp(40)
+        setPadding(dp(9), dp(9), dp(9), dp(9))
         setOnClickListener { action() }
     }
 
@@ -504,16 +524,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshVoiceLabel() {
         if (!::voicePickBtn.isInitialized) return
-        val name = pickedVoice ?: VoiceStore.defaultVoice(this)?.name ?: "none"
-        voicePickBtn.text = "Voice: $name ▾"
+        val name = pickedVoice ?: VoiceStore.defaultVoice(this)?.name
+        voicePickBtn.text =
+            if (name == null) "Voice: none ▾" else "${VoiceStore.icon(this, name)} $name ▾"
     }
+
+    /** "🦊 dale" labels for the picker dialogs, in list order. */
+    private fun voiceLabels(names: List<String>) =
+        names.map { "${VoiceStore.icon(this, it)}  $it" }.toTypedArray()
 
     private fun pickVoiceDialog() {
         val names = VoiceStore.list(this).map { it.name }
         if (names.isEmpty()) { toast("Import or design a voice first (Voices tab)"); return }
         MaterialAlertDialogBuilder(this)
             .setTitle("Voice for this job")
-            .setItems(names.toTypedArray()) { _, which ->
+            .setItems(voiceLabels(names)) { _, which ->
                 pickedVoice = names[which]
                 refreshVoiceLabel()
             }
@@ -625,7 +650,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 head.addView(TextView(context).apply {
+                    text = VoiceStore.icon(this@MainActivity, v.name)
+                    textSize = 20f
+                    setPadding(dp(2), 0, dp(8), 0)
+                })
+                head.addView(TextView(context).apply {
                     text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
                 lateinit var prevBtn: ImageButton
@@ -640,7 +672,7 @@ class MainActivity : AppCompatActivity() {
                             .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
                     }
                 })
-                head.addView(iconBtn(R.drawable.ic_edit, "Transcript") { transcriptDialog(v) })
+                head.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
                 head.addView(iconBtn(R.drawable.ic_delete, "Delete") {
                     MaterialAlertDialogBuilder(this@MainActivity)
                         .setMessage("Delete voice “${v.name}”?")
@@ -677,23 +709,75 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_PREVIEW, true))
     }
 
-    /** Editable transcript of the reference audio — manual for now; the slot
-     *  a future on-device whisper would pre-fill for the user to validate. */
-    private fun transcriptDialog(v: VoiceStore.Voice) {
-        val f = VoiceStore.transcriptFile(this, v.name)
-        val edit = EditText(this).apply {
-            setText(if (f.exists()) f.readText() else "")
-            hint = "What is said in the reference recording"
-            minLines = 3
-            setPadding(dp(20), dp(12), dp(20), dp(12))
+    /** Name, icon and reference transcript in one sheet. The transcript is
+     *  manual for now — the slot a future on-device whisper would pre-fill for
+     *  the user to validate. */
+    private fun editSpeakerDialog(v: VoiceStore.Voice) {
+        val transcript = VoiceStore.transcriptFile(this, v.name)
+        var chosenIcon = VoiceStore.icon(this, v.name)
+
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
         }
+        col.addView(TextView(this).apply { text = "Name"; textSize = 12f; alpha = 0.7f })
+        val nameEdit = EditText(this).apply { setText(v.name); setSingleLine() }
+        col.addView(nameEdit)
+
+        col.addView(TextView(this).apply {
+            text = "Icon"; textSize = 12f; alpha = 0.7f; setPadding(0, dp(14), 0, dp(4))
+        })
+        val perRow = 8
+        val cells = mutableListOf<TextView>()
+        fun paintCells() = cells.forEach {
+            it.setBackgroundColor(if (it.text == chosenIcon)
+                themeColor(com.google.android.material.R.attr.colorSecondaryContainer)
+            else android.graphics.Color.TRANSPARENT)
+        }
+        VoiceStore.ICONS.chunked(perRow).forEach { row ->
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                row.forEach { emoji ->
+                    val cell = TextView(context).apply {
+                        text = emoji
+                        textSize = 22f
+                        gravity = Gravity.CENTER
+                        setPadding(0, dp(6), 0, dp(6))
+                        setOnClickListener { chosenIcon = emoji; paintCells() }
+                    }
+                    cells.add(cell)
+                    addView(cell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                }
+            })
+        }
+        paintCells()
+
+        col.addView(TextView(this).apply {
+            text = "Transcript of the reference recording (optional)"
+            textSize = 12f; alpha = 0.7f; setPadding(0, dp(14), 0, dp(4))
+        })
+        val transcriptEdit = EditText(this).apply {
+            setText(if (transcript.exists()) transcript.readText() else "")
+            hint = "What is said in the recording"
+            minLines = 2
+        }
+        col.addView(transcriptEdit)
+
         MaterialAlertDialogBuilder(this)
-            .setTitle("Transcript — ${v.name}")
-            .setView(edit)
+            .setTitle("Edit speaker")
+            .setView(ScrollView(this).apply { addView(col) })
             .setPositiveButton("Save") { _, _ ->
-                val t = edit.text.toString().trim()
-                if (t.isBlank()) f.delete() else f.writeText(t)
+                val t = transcriptEdit.text.toString().trim()
+                if (t.isBlank()) transcript.delete() else transcript.writeText(t)
+                val renamed = try {
+                    VoiceStore.rename(this, v, nameEdit.text.toString())
+                } catch (e: Exception) {
+                    toast("Rename failed: ${e.message}"); v
+                }
+                VoiceStore.setIcon(this, renamed.name, chosenIcon)
+                if (pickedVoice == v.name) pickedVoice = renamed.name
                 rebuildVoices()
+                refreshVoiceLabel()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -943,11 +1027,11 @@ class MainActivity : AppCompatActivity() {
                     addView(Button(context).apply {
                         text = "Other voice…"
                         setOnClickListener {
-                            val names = VoiceStore.list(this@MainActivity).map { it.name }.toTypedArray()
+                            val names = VoiceStore.list(this@MainActivity).map { it.name }
                             if (names.isEmpty()) toast("No voices")
                             else MaterialAlertDialogBuilder(this@MainActivity)
                                 .setTitle("Re-run with voice")
-                                .setItems(names) { _, which -> rerunJob(j, names[which]) }
+                                .setItems(voiceLabels(names)) { _, which -> rerunJob(j, names[which]) }
                                 .show()
                         }
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })

@@ -37,6 +37,50 @@ object VoiceStore {
         v.file.delete()
         transcriptFile(ctx, v.name).delete()
         previewsDir(ctx).listFiles { f -> f.name.startsWith("${v.name}__") }?.forEach { it.delete() }
+        prefs(ctx).edit().remove(iconKey(v.name)).apply()
+    }
+
+    /** Renames the reference audio and everything keyed to the old name:
+     *  transcript, cached previews, icon, and the default-voice pointer. */
+    fun rename(ctx: Context, v: Voice, newName: String): Voice {
+        val safe = newName.replace(Regex("[^A-Za-z0-9 ._-]"), "_").trim()
+        if (safe.isBlank() || safe == v.name) return v
+        var dest = File(dir(ctx), "$safe.${v.file.extension}")
+        var i = 2
+        while (dest.exists()) { dest = File(dir(ctx), "$safe ($i).${v.file.extension}"); i++ }
+        if (!v.file.renameTo(dest)) throw java.io.IOException("could not rename ${v.file.name}")
+        val name = dest.nameWithoutExtension
+        transcriptFile(ctx, v.name).takeIf { it.exists() }?.renameTo(transcriptFile(ctx, name))
+        previewsDir(ctx).listFiles { f -> f.name.startsWith("${v.name}__") }?.forEach {
+            it.renameTo(File(previewsDir(ctx), name + it.name.removePrefix(v.name)))
+        }
+        val p = prefs(ctx)
+        val icon = p.getString(iconKey(v.name), null)
+        p.edit().apply {
+            remove(iconKey(v.name))
+            if (icon != null) putString(iconKey(name), icon)
+            if (p.getString("default_voice", null) == v.name) putString("default_voice", name)
+        }.apply()
+        return Voice(name, dest)
+    }
+
+    /** Emoji a voice is shown with. Unset voices get a stable one derived from
+     *  the name, so the library is never a wall of identical rows. */
+    val ICONS = listOf(
+        "🎙️", "🦊", "🐻", "🦉", "🐧", "🐙", "🦁", "🐉",
+        "🤖", "👽", "🧙", "🧛", "🤠", "👑", "🎩", "🦄",
+        "🐳", "🦖", "🐺", "🌚", "🎭", "📻", "🧜", "🕵️",
+    )
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
+    private fun iconKey(name: String) = "voice_icon_$name"
+
+    fun icon(ctx: Context, name: String): String =
+        prefs(ctx).getString(iconKey(name), null)
+            ?: ICONS[Math.floorMod(name.hashCode(), ICONS.size)]
+
+    fun setIcon(ctx: Context, name: String, icon: String) {
+        prefs(ctx).edit().putString(iconKey(name), icon).apply()
     }
 
     private fun previewsDir(ctx: Context) = File(ctx.filesDir, "previews").apply { mkdirs() }
