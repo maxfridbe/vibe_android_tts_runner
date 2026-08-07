@@ -314,8 +314,16 @@ class TtsService : Service() {
         var outputUri = ""
 
         when {
-            stopRequested -> { saver?.abort(); broadcast("stopped", 0, 0, "") }
-            failed != null -> { saver?.abort(); fail(failed) }
+            stopRequested -> {
+                saver?.abort()
+                persistJobResult(ephemeral, jobId, true, failed, chunksDone, audioSecs, genMs, output, outputUri)
+                broadcast("stopped", 0, 0, "")
+            }
+            failed != null -> {
+                saver?.abort()
+                persistJobResult(ephemeral, jobId, false, failed, chunksDone, audioSecs, genMs, output, outputUri)
+                fail(failed)
+            }
             saver != null -> {
                 val path = try {
                     saver.finish()
@@ -326,6 +334,9 @@ class TtsService : Service() {
                 output = path
                 outputUri = saver.uri.toString()
                 DebugLog.log(this, "TtsService", "saved: $path ($stats)")
+                // persist first: the UI rebuilds its Jobs list from this file
+                // as soon as the broadcast lands
+                persistJobResult(ephemeral, jobId, stopRequested, failed, chunksDone, audioSecs, genMs, output, outputUri)
                 broadcast("saved", chunks.size, chunks.size, "$path — $stats")
                 update(notif(title, "Saved to $path", 0, 0))
             }
@@ -336,19 +347,23 @@ class TtsService : Service() {
                             .copyTo(VoiceStore.previewFile(this, voice.name, model.id), overwrite = true)
                     }
                 }
+                persistJobResult(ephemeral, jobId, stopRequested, failed, chunksDone, audioSecs, genMs, output, outputUri)
                 broadcast(if (design) "designed" else "done", chunks.size, chunks.size, stats)
             }
         }
-        if (!ephemeral) {
-            JobStore.update(this, jobId) {
-                it.status = when { stopRequested -> "stopped"; failed != null -> "failed"; else -> "done" }
-                it.chunks = chunksDone
-                it.audioSecs = audioSecs
-                it.genMs = genMs
-                it.output = output
-                it.outputUri = outputUri
-                it.error = failed ?: ""
-            }
+    }
+
+    private fun persistJobResult(ephemeral: Boolean, jobId: Long, stopped: Boolean, failed: String?,
+                                 chunks: Int, audioSecs: Double, genMs: Long, output: String, outputUri: String) {
+        if (ephemeral) return
+        JobStore.update(this, jobId) {
+            it.status = when { stopped -> "stopped"; failed != null -> "failed"; else -> "done" }
+            it.chunks = chunks
+            it.audioSecs = audioSecs
+            it.genMs = genMs
+            it.output = output
+            it.outputUri = outputUri
+            it.error = failed ?: ""
         }
     }
 

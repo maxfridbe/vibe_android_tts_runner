@@ -258,19 +258,23 @@ class MainActivity : AppCompatActivity() {
     private val memTicker = object : Runnable {
         override fun run() {
             thread {
-                val text = runCatching {
-                    val am = getSystemService(android.app.ActivityManager::class.java)
+                val am = getSystemService(android.app.ActivityManager::class.java)
+                val free = runCatching {
                     val mi = android.app.ActivityManager.MemoryInfo()
                     am.getMemoryInfo(mi)
-                    val enginePid = am.runningAppProcesses?.find { it.processName.endsWith(":engine") }?.pid
-                    val engineMb = enginePid?.let { pid ->
-                        File("/proc/$pid/status").readLines()
-                            .firstOrNull { it.startsWith("VmRSS") }
-                            ?.filter { it.isDigit() }?.toLongOrNull()?.div(1024)
-                    }
-                    (if (engineMb != null) "engine ${"%.1f".format(engineMb / 1024.0)} GB · " else "engine idle · ") +
-                        "free ${"%.1f".format(mi.availMem / 1073741824.0)} GB"
+                    "free ${"%.1f".format(mi.availMem / 1073741824.0)} GB"
                 }.getOrDefault("")
+                val engine = runCatching {
+                    val pid = am.runningAppProcesses?.find { it.processName.endsWith(":engine") }?.pid
+                    if (pid == null) "engine idle"
+                    else {
+                        // getProcessMemoryInfo works for our own processes;
+                        // /proc/<pid> of a sibling is blocked by hidepid
+                        val pss = am.getProcessMemoryInfo(intArrayOf(pid)).firstOrNull()?.totalPss ?: 0
+                        if (pss > 0) "engine ${"%.1f".format(pss / 1048576.0)} GB" else "engine loaded"
+                    }
+                }.getOrDefault("")
+                val text = listOf(engine, free).filter { it.isNotBlank() }.joinToString(" · ")
                 runOnUiThread { memMeter.text = text }
             }
             ui.postDelayed(this, 2500)
@@ -290,7 +294,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        player?.release(); player = null
+        stopPlayback()
         super.onDestroy()
     }
 
@@ -449,22 +453,44 @@ class MainActivity : AppCompatActivity() {
 
     private fun lastAudio() = File(filesDir, "last_audio.wav")
 
-    private fun playFile(path: String) = playSource { it.setDataSource(path) }
-    private fun playUri(uri: Uri) = playSource { it.setDataSource(this, uri) }
+    private var playingBtn: ImageButton? = null
+    private var playingKey: String? = null
 
-    private fun playSource(set: (android.media.MediaPlayer) -> Unit) {
-        player?.release(); player = null
+    private fun playFile(path: String, btn: ImageButton) = playSource(path, btn) { it.setDataSource(path) }
+    private fun playUri(uri: Uri, btn: ImageButton) = playSource(uri.toString(), btn) { it.setDataSource(this, uri) }
+
+    /** One player at a time; the button that started it shows a pause icon
+     *  and toggles, every other play button resets to the play icon. */
+    private fun playSource(key: String, btn: ImageButton, set: (android.media.MediaPlayer) -> Unit) {
+        val p = player
+        if (p != null && playingKey == key) {
+            if (p.isPlaying) { p.pause(); btn.setImageResource(R.drawable.ic_play) }
+            else { p.start(); btn.setImageResource(R.drawable.ic_pause) }
+            return
+        }
+        stopPlayback()
         try {
             player = android.media.MediaPlayer().apply {
                 set(this)
                 prepare()
-                setOnCompletionListener { it.release(); player = null }
+                setOnCompletionListener { stopPlayback() }
                 start()
             }
+            playingKey = key
+            playingBtn = btn
+            btn.setImageResource(R.drawable.ic_pause)
         } catch (e: Exception) {
             toast("Playback failed: ${e.message}")
-            player?.release(); player = null
+            stopPlayback()
         }
+    }
+
+    private fun stopPlayback() {
+        playingBtn?.setImageResource(R.drawable.ic_play)
+        playingBtn = null
+        playingKey = null
+        player?.let { runCatching { it.stop() }; it.release() }
+        player = null
     }
 
     // ---- Voices tab --------------------------------------------------------
@@ -514,8 +540,10 @@ class MainActivity : AppCompatActivity() {
                     text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
-                head.addView(iconBtn(R.drawable.ic_play,
-                    if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v) })
+                lateinit var prevBtn: ImageButton
+                prevBtn = iconBtn(R.drawable.ic_play,
+                    if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
+                head.addView(prevBtn)
                 head.addView(iconBtn(R.drawable.ic_share, "Share preview") {
                     val p = VoiceStore.previewFile(this@MainActivity, v.name, modelId)
                     if (!p.exists()) toast("Generate a preview first (▶)")
@@ -547,9 +575,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun previewVoice(v: VoiceStore.Voice) {
+    private fun previewVoice(v: VoiceStore.Voice, btn: ImageButton) {
         val cached = VoiceStore.previewFile(this, v.name, currentModelId())
-        if (cached.exists()) { playFile(cached.absolutePath); return }
+        if (cached.exists()) { playFile(cached.absolutePath, btn); return }
         if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
         toast("Generating preview with ${currentModelId()} — plays when ready, then cached")
         startForegroundService(Intent(this, TtsService::class.java)
@@ -685,10 +713,12 @@ class MainActivity : AppCompatActivity() {
         col.addView(card {
             addView(TextView(context).apply { text = "Last generated audio"; textSize = 14f; setTypeface(typeface, Typeface.BOLD) })
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(iconBtn(R.drawable.ic_play, "Play last audio") {
+            lateinit var lastBtn: ImageButton
+            lastBtn = iconBtn(R.drawable.ic_play, "Play last audio") {
                 val f = lastAudio()
-                if (f.exists() && f.length() > 44) playFile(f.absolutePath) else toast("No audio yet")
-            })
+                if (f.exists() && f.length() > 44) playFile(f.absolutePath, lastBtn) else toast("No audio yet")
+            }
+            row.addView(lastBtn)
             waveform = WaveformView(context)
             row.addView(waveform, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
             row.addView(iconBtn(R.drawable.ic_share, "Share last audio") {
@@ -729,7 +759,9 @@ class MainActivity : AppCompatActivity() {
                     textSize = 16f; setTypeface(typeface, Typeface.BOLD)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 if (j.outputUri.isNotBlank()) {
-                    head.addView(iconBtn(R.drawable.ic_play, "Play") { playUri(Uri.parse(j.outputUri)) })
+                    lateinit var jobBtn: ImageButton
+                    jobBtn = iconBtn(R.drawable.ic_play, "Play") { playUri(Uri.parse(j.outputUri), jobBtn) }
+                    head.addView(jobBtn)
                     head.addView(iconBtn(R.drawable.ic_share, "Share") {
                         AudioShare.shareUri(this@MainActivity, Uri.parse(j.outputUri), j.title)
                     })
