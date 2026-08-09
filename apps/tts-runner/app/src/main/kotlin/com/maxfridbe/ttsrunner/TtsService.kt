@@ -730,13 +730,18 @@ class TtsService : Service() {
             TtsEngine.nUnload()          // free the llama.cpp side first
             broadcast("loading", 0, 0, model.label)
             val eng = supertonic ?: SupertonicEngine(this).also { supertonic = it }
-            // "vulkan"/"opencl" mean "use the accelerator" — for ORT that is NNAPI
+            // ORT providers, measured on the S24 FE (Xclipse 940), 90 chars:
+            //   plain CPU 2.71 s | NNAPI 2.70 s | XNNPACK 5.65 s
+            // NNAPI loads but places nothing on the GPU here (identical time),
+            // and XNNPACK is twice as slow on these graphs, so CPU is the
+            // default and a GPU pick still tries NNAPI — it is the path that
+            // can pay off on other vendors' drivers.
             val ep = if (backend == "cpu") "cpu" else "nnapi"
             val t0 = System.currentTimeMillis()
             var ok = eng.load(ModelManager.supertonicDir(this), ep)
-            if (!ok && ep != "cpu") {
-                DebugLog.log(this, "TtsService", "NNAPI unavailable; loading Supertonic on CPU")
-                broadcast("note", 0, 0, "NNAPI not usable here — Supertonic on CPU")
+            if (!ok) {
+                DebugLog.log(this, "TtsService", "$ep unavailable; loading Supertonic on plain CPU")
+                broadcast("note", 0, 0, "$ep not usable here — Supertonic on CPU")
                 ok = eng.load(ModelManager.supertonicDir(this), "cpu")
             }
             DebugLog.log(this, "TtsService",

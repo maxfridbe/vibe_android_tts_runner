@@ -64,13 +64,22 @@ class SupertonicEngine(private val ctx: Context) {
             chunkCompressFactor = cfg.getJSONObject("ttl").getInt("chunk_compress_factor")
             latentDim = cfg.getJSONObject("ttl").getInt("latent_dim")
 
+            val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(6)
             fun opts(): OrtSession.SessionOptions {
                 val o = OrtSession.SessionOptions()
-                o.setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(6))
+                o.setIntraOpNumThreads(threads)
                 o.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-                if (backend == "nnapi") {
-                    // throws on devices without the EP compiled in / usable
-                    o.addNnapi()
+                when (backend) {
+                    // NNAPI hands ops to the GPU/NPU driver where it can. On
+                    // Xclipse it loads but places nothing: measured identical
+                    // to CPU, so it is offered, not preferred.
+                    "nnapi" -> o.addNnapi()
+                    // XNNPACK is ORT's optimised CPU kernel set; it owns its
+                    // own thread pool, so the session must not also spawn one
+                    "xnnpack" -> {
+                        o.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                        o.setIntraOpNumThreads(1)
+                    }
                 }
                 return o
             }

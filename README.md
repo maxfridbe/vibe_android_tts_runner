@@ -79,8 +79,15 @@ emoji and `[17]`-style citations are stripped before speaking.
 
 ## Models
 
+Two engines ship side by side. **Qwen3-TTS** (1.7B, llama.cpp) clones a voice
+from your own recording but runs at RTF 5–6 on a phone. **Supertonic 3** (99M,
+ONNX Runtime) runs *below* real time — 5.7 s of audio in 2.7 s on an S24 FE —
+across 31 languages, but speaks only pre-computed style voices: the published
+models have no speaker encoder, so it cannot clone from a recording.
+
 | Model | Source |
 |---|---|
+| Supertonic 3 (~400 MB, 4 ONNX graphs + 10 style voices) | downloaded in-app from [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) |
 | 1.7B Q4_K_M (recommended), Q8_0 | downloaded in-app from [ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
 | 1.7B Q4_0 (needed for the Adreno OpenCL kernels) | requantized on-device from the Q8 download — nobody hosts this quant |
 | 1.7B VoiceDesign (description-based voice design) | downloaded in-app from this repo's [`models-v1` release](https://github.com/maxfridbe/vibe_android_tts_runner/releases/tag/models-v1) — upstream publishes no GGUF of this variant |
@@ -165,6 +172,13 @@ Measured with the 1.7B model, 44-character sentence:
 | Galaxy Z Fold5 (SD 8 Gen 2 / Adreno 740) | CPU | 3.4 s audio in ~23 s |
 | Galaxy Z Fold5 | OpenCL, Q4_0 | ~1.7× faster talker than CPU |
 | Galaxy S24 FE (Exynos 2400e / Xclipse 940) | Vulkan | 3.4 s audio in ~21 s |
+| Galaxy S24 FE — **Supertonic 3** | CPU | 5.7 s audio in 2.7 s (RTF 0.47) |
+
+ONNX Runtime providers for Supertonic on the S24 FE, same 90-character
+sentence: plain **CPU 2.71 s**, **NNAPI 2.70 s** (loads, but the Xclipse
+driver places nothing — identical timing), **XNNPACK 5.65 s** (twice as slow
+on these graphs). CPU is therefore the default; picking a GPU engine still
+tries NNAPI, which is the path that can pay off on other vendors' drivers.
 
 - **Adreno Vulkan** cannot compile llama.cpp's compute shaders
   (`createComputePipeline: ErrorUnknown`) — use OpenCL there. Adreno's OpenCL
