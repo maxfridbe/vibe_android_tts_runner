@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="share" path="share/" />
+    <!-- speakers are shared as the file itself: a style JSON or the reference
+         recording, so another phone can import exactly what this one has -->
+    <files-path name="voices" path="voices/" />
 </paths>

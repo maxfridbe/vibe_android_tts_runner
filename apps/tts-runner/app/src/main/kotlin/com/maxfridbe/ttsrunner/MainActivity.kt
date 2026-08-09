@@ -183,7 +183,7 @@ class MainActivity : AppCompatActivity() {
         val wide = resources.configuration.screenWidthDp >= 600
         val navItems = { menu: Menu ->
             menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(R.drawable.ic_add)
-            menu.add(0, TAB_VOICES, 1, "Voices").setIcon(R.drawable.ic_mic)
+            menu.add(0, TAB_VOICES, 1, "Speakers").setIcon(R.drawable.ic_mic)
             menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_jobs)
             menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(R.drawable.ic_settings)
         }
@@ -274,7 +274,9 @@ class MainActivity : AppCompatActivity() {
             }.noStateSave()
         }
         when (id) {
-            TAB_VOICES -> rebuildVoices()
+            // opening the tab is the natural moment to reconcile with the
+            // backup folder: new speakers go out, a fresh install pulls back in
+            TAB_VOICES -> { rebuildVoices(); syncSpeakerFolder(loud = false) }
             TAB_JOBS -> rebuildJobs()
             TAB_NEWJOB -> refreshVoiceLabel()
         }
@@ -493,15 +495,8 @@ class MainActivity : AppCompatActivity() {
             addView(optionsRow)
 
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-            // live mode is only sensible on the fast engine
-            if (ModelManager.selectedModel(this@MainActivity)?.engine == "supertonic") {
-                actions.addView(Button(context).apply {
-                    text = "Talk live"
-                    setOnClickListener {
-                        startActivity(Intent(this@MainActivity, TalkActivity::class.java))
-                    }
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            }
+            // live mode lives on the Speakers tab now: you start it as a
+            // particular speaker, which is a choice about the voice, not the job
             actions.addView(Button(context).apply {
                 text = "Add job"
                 setOnClickListener {
@@ -549,9 +544,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshVoiceLabel() {
         if (!::voicePickBtn.isInitialized) return
+        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
         val name = pickedVoice?.takeIf { it in voicesForCurrentModel() }
+            ?: VoiceStore.defaultFor(this, supertonic)?.name
             ?: voicesForCurrentModel().firstOrNull()
-            ?: VoiceStore.defaultVoice(this)?.name
         voicePickBtn.text =
             if (name == null) "Voice: none ▾" else "${VoiceStore.icon(this, name)} $name ▾"
     }
@@ -590,7 +586,7 @@ class MainActivity : AppCompatActivity() {
         if (model == null) { toast("Download a model first (Settings tab)"); return false }
         if (model.engine == "supertonic") {
             val style = voiceName?.takeIf { VoiceStore.styleFile(this, it) != null }
-                ?: VoiceStore.styleList(this).firstOrNull()?.name
+                ?: VoiceStore.defaultFor(this, true)?.name
             if (style == null) { toast("No style voices — re-download Supertonic in Settings"); return false }
             startForegroundService(Intent(this, TtsService::class.java)
                 .setAction(TtsService.ACTION_SPEAK)
@@ -665,37 +661,110 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var voicesList: LinearLayout
 
+    /** Speaker awaiting a folder pick, or null when exporting the whole library. */
+    private var exportOne: VoiceStore.Voice? = null
+
     private fun buildVoicesTab(): View {
         val (scroll, col) = page()
-        col.title("Voices")
-        col.caption("A voice is 10–20 s of clean speech. Record one, import a recording, or design one. " +
-            "Previews are generated once per model and cached.")
+        col.title("Speakers")
+        col.caption("Two kinds live here: Supertonic style files, and reference recordings for the " +
+            "Qwen models. Each section holds the speakers one model can use.")
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         topRow.addView(Button(this).apply {
             text = "Record"
             setOnClickListener { startActivity(Intent(this@MainActivity, RecordActivity::class.java)) }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         topRow.addView(Button(this).apply {
-            text = "Import"
-            // audio -> a cloned Qwen voice; .json -> a Supertonic style,
-            // including one produced by the offline cloning tool
-            setOnClickListener {
-                startActivityForResult(
-                    Intent(Intent.ACTION_OPEN_DOCUMENT)
-                        .addCategory(Intent.CATEGORY_OPENABLE)
-                        .setType("*/*")
-                        .putExtra(Intent.EXTRA_MIME_TYPES,
-                            arrayOf("audio/*", "application/json", "text/json")), REQ_IMPORT)
-            }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
-        topRow.addView(Button(this).apply {
             text = "Design"
             setOnClickListener { designVoiceDialog() }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+        topRow.addView(Button(this).apply {
+            text = "Files ▾"
+            setOnClickListener { filesMenu(this) }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         col.addView(topRow)
+
+        // Live mode belongs to a speaker, so it is launched from here. The
+        // per-speaker chat icon starts it as that one; this starts it as
+        // whichever Supertonic speaker was used last.
+        col.addView(Button(this).apply {
+            text = "💬  Talk live"
+            setOnClickListener { startTalk(null) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
+
         voicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, 0) }
         col.addView(voicesList)
         return scroll
+    }
+
+    private fun startTalk(voiceName: String?) {
+        if (ModelManager.selectedModel(this)?.engine != "supertonic") {
+            toast("Live mode needs Supertonic 3 — switch the model in Settings")
+            return
+        }
+        if (VoiceStore.styleList(this).isEmpty()) {
+            toast("No Supertonic speakers yet — import a style first")
+            return
+        }
+        startActivity(Intent(this, TalkActivity::class.java)
+            .putExtra(TalkActivity.EXTRA_VOICE, voiceName))
+    }
+
+    /** Import and export in one menu: a single file, a whole folder, or the
+     *  library back out to a folder — the round trip that moves speakers
+     *  between phones and off the desktop cloning tool. */
+    private fun filesMenu(anchor: View) {
+        val folder = SpeakerFolder.label(this)
+        android.widget.PopupMenu(this, anchor).apply {
+            menu.add("Import a file…")
+            menu.add("Import a folder…")
+            menu.add("Export all speakers…")
+            menu.add(if (folder == null) "Keep a backup folder…" else "Backup folder: $folder")
+            if (folder != null) menu.add("Sync backup folder now")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "Import a file…" -> startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("*/*")
+                            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                            .putExtra(Intent.EXTRA_MIME_TYPES,
+                                arrayOf("audio/*", "application/json", "text/json")), REQ_IMPORT)
+                    "Import a folder…" ->
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_IMPORT_DIR)
+                    "Export all speakers…" -> {
+                        exportOne = null
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_EXPORT_DIR)
+                    }
+                    "Sync backup folder now" -> syncSpeakerFolder(loud = true)
+                    else -> startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                      Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                      Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), REQ_BACKUP_DIR)
+                }
+                true
+            }
+            show()
+        }
+    }
+
+    /** Mirrors the library into the backup folder and pulls back anything only
+     *  the folder has. Runs off-main: it is a pile of content-provider calls. */
+    private fun syncSpeakerFolder(loud: Boolean) {
+        if (SpeakerFolder.uri(this) == null) return
+        thread {
+            val r = SpeakerFolder.sync(this)
+            runOnUiThread {
+                if (r.imported > 0) rebuildVoices()
+                if (loud) toast(when {
+                    r.error != null -> "Backup folder: ${r.error}"
+                    r.exported == 0 && r.imported == 0 -> "Backup folder already up to date"
+                    else -> "Backup folder: ${r.exported} saved, ${r.imported} restored"
+                })
+            }
+        }
     }
 
     /** Supertonic ships style voices with the model; surface them in the
@@ -709,23 +778,72 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** A collapsible group. Which one is open is remembered per section, but
+     *  the first time round the model you are actually using decides — that is
+     *  the section whose speakers you can pick right now. */
+    private fun section(key: String, title: String, subtitle: String, count: Int,
+                        defaultOpen: Boolean, body: LinearLayout.() -> Unit) {
+        val open = prefs().getBoolean("sec_$key", defaultOpen)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, dp(6))
+            isClickable = true
+            setOnClickListener {
+                prefs().edit().putBoolean("sec_$key", !open).apply()
+                rebuildVoices()
+            }
+        }
+        header.addView(TextView(this).apply {
+            text = if (open) "▾" else "▸"
+            textSize = 14f; alpha = 0.7f; setPadding(0, 0, dp(8), 0)
+        })
+        header.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = "$title  ($count)"
+                textSize = 14f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = subtitle; textSize = 11f; alpha = 0.6f
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        voicesList.addView(header)
+        if (!open) return
+        val holder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; body() }
+        voicesList.addView(holder)
+    }
+
     private fun rebuildVoices() {
         if (!::voicesList.isInitialized) return
         adoptSupertonicStyles()
         voicesList.removeAllViews()
         val def = VoiceStore.defaultVoice(this)
         val modelId = currentModelId()
+        val supertonicModel = ModelManager.selectedModel(this)?.engine == "supertonic"
         val styleVoices = VoiceStore.styleList(this)
-        if (styleVoices.isNotEmpty()) {
-            voicesList.addView(TextView(this).apply {
-                text = "Supertonic style voices"
-                textSize = 12f; alpha = 0.7f; setPadding(0, dp(4), 0, dp(4))
-            })
+        val styleDef = VoiceStore.defaultFor(this, true)
+
+        section("styles", "Supertonic 3 speakers", "style files · instant, works offline",
+                styleVoices.size, defaultOpen = supertonicModel) {
+            if (styleVoices.isEmpty()) {
+                addView(TextView(context).apply {
+                    text = "None yet — import a style file or folder."
+                    textSize = 12f; alpha = 0.6f; setPadding(0, 0, 0, dp(8))
+                })
+            }
             for (v in styleVoices) {
-                voicesList.addView(card {
+                addView(card {
                     val row = LinearLayout(context).apply {
                         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                     }
+                    row.addView(RadioButton(context).apply {
+                        isChecked = v.name == styleDef?.name
+                        setOnClickListener {
+                            VoiceStore.setDefaultFor(this@MainActivity, v, true)
+                            rebuildVoices(); refreshVoiceLabel()
+                        }
+                    })
                     row.addView(TextView(context).apply {
                         text = VoiceStore.icon(this@MainActivity, v.name)
                         textSize = 20f; setPadding(dp(2), 0, dp(8), 0)
@@ -733,25 +851,46 @@ class MainActivity : AppCompatActivity() {
                     row.addView(TextView(context).apply {
                         text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
                         maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
+                    lateinit var prevBtn: ImageButton
+                    prevBtn = iconBtn(R.drawable.ic_play,
+                        if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
+                    row.addView(prevBtn)
+                    row.addView(iconBtn(R.drawable.ic_chat, "Talk live as this speaker") { startTalk(v.name) })
+                    row.addView(iconBtn(R.drawable.ic_share, "Share this speaker as a file") { shareSpeaker(v) })
                     row.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
                     row.addView(iconBtn(R.drawable.ic_delete, "Delete") {
-                        v.file.delete(); rebuildVoices()
+                        MaterialAlertDialogBuilder(this@MainActivity)
+                            .setMessage("Delete speaker “${v.name}”?")
+                            .setPositiveButton("Delete") { _, _ ->
+                                val gone = v.file.name
+                                VoiceStore.delete(this@MainActivity, v); rebuildVoices()
+                                thread { SpeakerFolder.remove(this@MainActivity, gone) }
+                            }
+                            .setNegativeButton("Cancel", null).show()
                     })
                     addView(row)
                     addView(TextView(context).apply {
-                        text = "style voice · works with Supertonic 3"
+                        text = styleSubtitle(v)
                         textSize = 12f; alpha = 0.6f
                     })
                 })
             }
-            voicesList.addView(TextView(this).apply {
-                text = "Cloned voices (reference audio)"
-                textSize = 12f; alpha = 0.7f; setPadding(0, dp(12), 0, dp(4))
+        }
+
+        val refVoices = VoiceStore.list(this)
+        section("refs", "Qwen speakers", "reference recordings · cloned as you generate",
+                refVoices.size, defaultOpen = !supertonicModel) {
+        if (refVoices.isEmpty()) {
+            addView(TextView(context).apply {
+                text = "None yet — record, design or import a recording."
+                textSize = 12f; alpha = 0.6f; setPadding(0, 0, 0, dp(8))
             })
         }
-        for (v in VoiceStore.list(this)) {
-            voicesList.addView(card {
+        for (v in refVoices) {
+            addView(card {
                 val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 head.addView(RadioButton(context).apply {
                     isChecked = v.name == def?.name
@@ -775,14 +914,7 @@ class MainActivity : AppCompatActivity() {
                 prevBtn = iconBtn(R.drawable.ic_play,
                     if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
                 head.addView(prevBtn)
-                head.addView(iconBtn(R.drawable.ic_share, "Share preview") {
-                    val p = VoiceStore.previewFile(this@MainActivity, v.name, modelId)
-                    if (!p.exists()) toast("Generate a preview first (▶)")
-                    else thread {
-                        runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice ${v.name}") }
-                            .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
-                    }
-                })
+                head.addView(iconBtn(R.drawable.ic_share, "Share this speaker as a file") { shareSpeaker(v) })
                 if (VoiceCloner.available(this@MainActivity)) {
                     head.addView(iconBtn(R.drawable.ic_add, "Clone to a Supertonic voice") {
                         cloneToSupertonic(v)
@@ -793,7 +925,9 @@ class MainActivity : AppCompatActivity() {
                     MaterialAlertDialogBuilder(this@MainActivity)
                         .setMessage("Delete voice “${v.name}”?")
                         .setPositiveButton("Delete") { _, _ ->
-                            VoiceStore.delete(this@MainActivity, v); rebuildVoices()
+                            val gone = v.file.name
+                                VoiceStore.delete(this@MainActivity, v); rebuildVoices()
+                                thread { SpeakerFolder.remove(this@MainActivity, gone) }
                         }
                         .setNegativeButton("Cancel", null).show()
                 })
@@ -804,10 +938,39 @@ class MainActivity : AppCompatActivity() {
                 addView(TextView(context).apply { text = bits.joinToString(" · "); textSize = 12f; alpha = 0.6f })
             })
         }
-        if (voicesList.childCount == 0) {
-            voicesList.addView(TextView(this).apply {
-                text = "No voices yet — import a recording or design one."; alpha = 0.6f
-            })
+        }
+    }
+
+    /** What a style file can tell about itself: the cloner writes where it came
+     *  from and how close it scored, and that is worth showing. */
+    private fun styleSubtitle(v: VoiceStore.Voice): String {
+        val meta = runCatching {
+            org.json.JSONObject(v.file.readText()).optJSONObject("metadata")
+        }.getOrNull() ?: return "style file · ${v.file.length() / 1024} KB"
+        val bits = mutableListOf<String>()
+        meta.optString("source").takeIf { it.isNotBlank() }?.let { bits.add(it) }
+        meta.optDouble("held_out_cos", Double.NaN).takeIf { !it.isNaN() }
+            ?.let { bits.add("similarity ${"%.2f".format(it)}") }
+        if (bits.isEmpty()) bits.add("style file")
+        return bits.joinToString(" · ")
+    }
+
+    /** Hands the speaker out as the file it actually is — a style JSON or the
+     *  reference recording — so the other end can import it unchanged. */
+    private fun shareSpeaker(v: VoiceStore.Voice) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this, "$packageName.files", v.file)
+            val mime = if (v.file.extension.equals("json", true)) "application/json" else "audio/*"
+            startActivity(Intent.createChooser(
+                Intent(Intent.ACTION_SEND)
+                    .setType(mime)
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .putExtra(Intent.EXTRA_SUBJECT, "Speaker: ${v.name}")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                "Share speaker"))
+        } catch (e: Exception) {
+            toast("Share failed: ${e.message}")
         }
     }
 
@@ -909,6 +1072,10 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Edit speaker")
             .setView(ScrollView(this).apply { addView(col) })
+            .setNeutralButton("Save to folder…") { _, _ ->
+                exportOne = v
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_EXPORT_DIR)
+            }
             .setPositiveButton("Save") { _, _ ->
                 val t = transcriptEdit.text.toString().trim()
                 if (t.isBlank()) transcript.delete() else transcript.writeText(t)
@@ -921,6 +1088,11 @@ class MainActivity : AppCompatActivity() {
                 if (pickedVoice == v.name) pickedVoice = renamed.name
                 rebuildVoices()
                 refreshVoiceLabel()
+                if (renamed.file.name != v.file.name) thread {
+                    // the backup folder tracks the library, so the old name goes
+                    SpeakerFolder.remove(this, v.file.name)
+                    SpeakerFolder.mirror(this, renamed)
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -996,24 +1168,95 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun displayName(uri: Uri, fallback: String = "voice.wav"): String =
+        contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (c.moveToFirst() && idx >= 0) c.getString(idx) else null
+        } ?: fallback
+
+    /** Imports every speaker file in a picked folder. Uses DocumentsContract
+     *  directly rather than pulling in documentfile for one listing. */
+    private fun importFolder(tree: Uri) {
+        val children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+            tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
+        var ok = 0
+        var skipped = 0
+        val failures = mutableListOf<String>()
+        contentResolver.query(children, arrayOf(
+            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+            ?.use { c ->
+                while (c.moveToNext()) {
+                    val name = c.getString(1) ?: continue
+                    if (!VoiceStore.isSpeakerFile(name)) { skipped++; continue }
+                    val doc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))
+                    try {
+                        VoiceStore.importAny(this, doc, name); ok++
+                    } catch (e: Exception) {
+                        failures.add("$name: ${e.message}")
+                    }
+                }
+            }
+        rebuildVoices()
+        DebugLog.log(this, "MainActivity",
+            "folder import: $ok imported, $skipped skipped, ${failures.size} failed ${failures.take(3)}")
+        toast(when {
+            ok == 0 && failures.isEmpty() -> "No speaker files in that folder"
+            failures.isEmpty() -> "Imported $ok speaker${if (ok == 1) "" else "s"}"
+            else -> "Imported $ok, ${failures.size} failed — see Settings → Copy log"
+        })
+    }
+
+    /** Writes [what] (or the whole library) into a picked folder. */
+    private fun exportFolder(tree: Uri, what: VoiceStore.Voice?) {
+        val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+            tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
+        val voices = what?.let { listOf(it) } ?: (VoiceStore.styleList(this) + VoiceStore.list(this))
+        var ok = 0
+        val failures = mutableListOf<String>()
+        for (v in voices) {
+            try {
+                val mime = if (v.file.extension.equals("json", true)) "application/json" else "audio/*"
+                val dest = android.provider.DocumentsContract.createDocument(
+                    contentResolver, parent, mime, v.file.name)
+                    ?: throw java.io.IOException("could not create ${v.file.name}")
+                contentResolver.openOutputStream(dest)!!.use { out -> v.file.inputStream().use { it.copyTo(out) } }
+                ok++
+            } catch (e: Exception) {
+                failures.add("${v.file.name}: ${e.message}")
+            }
+        }
+        DebugLog.log(this, "MainActivity", "folder export: $ok written, ${failures.size} failed ${failures.take(3)}")
+        toast(if (failures.isEmpty()) "Exported $ok file${if (ok == 1) "" else "s"}"
+              else "Exported $ok, ${failures.size} failed — see Settings → Copy log")
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_IMPORT && resultCode == RESULT_OK && data?.data != null) {
-            val uri: Uri = data.data!!
-            val name = contentResolver.query(uri, null, null, null, null)?.use { c ->
-                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (c.moveToFirst() && idx >= 0) c.getString(idx) else null
-            } ?: "voice.wav"
-            try {
-                if (name.endsWith(".json", true)) {
-                    val v = VoiceStore.importStyleFromUri(this, uri, name.removeSuffix(".json"))
-                    toast("Style voice “${v.name}” imported — use it with Supertonic")
-                } else {
-                    VoiceStore.import(this, uri, name)
+        if (resultCode != RESULT_OK || data == null) return
+        when (requestCode) {
+            REQ_IMPORT -> {
+                // the picker returns one uri in data, or several in a ClipData
+                val uris = data.clipData?.let { clip ->
+                    (0 until clip.itemCount).map { clip.getItemAt(it).uri }
+                } ?: listOfNotNull(data.data)
+                var ok = 0
+                for (uri in uris) {
+                    try {
+                        VoiceStore.importAny(this, uri, displayName(uri)); ok++
+                    } catch (e: Exception) {
+                        toast("Import failed: ${e.message}")
+                    }
                 }
+                if (ok > 0) toast("Imported $ok speaker${if (ok == 1) "" else "s"}")
                 rebuildVoices()
-            } catch (e: Exception) {
-                toast("Import failed: ${e.message}")
+            }
+            REQ_IMPORT_DIR -> data.data?.let { importFolder(it) }
+            REQ_EXPORT_DIR -> data.data?.let { exportFolder(it, exportOne); exportOne = null }
+            REQ_BACKUP_DIR -> data.data?.let {
+                SpeakerFolder.remember(this, it)
+                toast("Speakers will be kept in ${SpeakerFolder.label(this)}")
+                syncSpeakerFolder(loud = true)
             }
         }
     }
@@ -1436,6 +1679,9 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQ_IMPORT = 11
+        private const val REQ_IMPORT_DIR = 12
+        private const val REQ_EXPORT_DIR = 13
+        private const val REQ_BACKUP_DIR = 14
         private const val TAB_NEWJOB = 1
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3

@@ -118,13 +118,26 @@ class ShareActivity : AppCompatActivity() {
         }
     }
 
+    /** The engines take different kinds of voice — Supertonic reads style
+     *  JSONs, Qwen reads reference recordings — so the picker has to follow the
+     *  selected model. Listing only recordings left this dialog empty (and
+     *  Speak greyed out) for anyone running Supertonic. */
+    private fun voiceList(): List<VoiceStore.Voice> {
+        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
+        return if (supertonic) VoiceStore.styleList(this) else VoiceStore.list(this)
+    }
+
     private fun populateVoices() {
-        val list = VoiceStore.list(this)
+        val list = voiceList()
         if (list.isEmpty()) {
-            status.text = "No voices yet — open TTS Runner and import one first"
+            val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
+            status.text = if (supertonic)
+                "No Supertonic speakers yet — open TTS Runner and import a style"
+            else "No voices yet — open TTS Runner and import one first"
             return
         }
-        val def = VoiceStore.defaultVoice(this)
+        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
+        val def = VoiceStore.defaultFor(this, supertonic)
         for ((i, v) in list.withIndex()) {
             voices.addView(RadioButton(this).apply {
                 text = "${VoiceStore.icon(this@ShareActivity, v.name)}  ${v.name}"
@@ -137,9 +150,9 @@ class ShareActivity : AppCompatActivity() {
 
     private fun speak(save: Boolean) {
         val c = cleaned ?: return
-        val list = VoiceStore.list(this)
-        val voice = list.getOrNull(voices.checkedRadioButtonId) ?: return
-        VoiceStore.setDefault(this, voice)
+        val voice = voiceList().getOrNull(voices.checkedRadioButtonId) ?: return
+        VoiceStore.setDefaultFor(this, voice,
+            ModelManager.selectedModel(this)?.engine == "supertonic")
         val backend = getSharedPreferences("ttsrunner", MODE_PRIVATE).getString("backend", "cpu") ?: "cpu"
         startForegroundService(
             Intent(this, TtsService::class.java)

@@ -160,4 +160,32 @@ object VoiceStore {
     fun setDefault(ctx: Context, v: Voice) {
         ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE).edit().putString("default_voice", v.name).apply()
     }
+
+    /** The two engines take different kinds of voice, so they each remember
+     *  their own last pick — switching models must not silently reset it. */
+    fun defaultFor(ctx: Context, supertonic: Boolean): Voice? {
+        if (!supertonic) return defaultVoice(ctx)
+        val name = prefs(ctx).getString("default_style", null)
+        val all = styleList(ctx)
+        return all.find { it.name == name } ?: all.firstOrNull()
+    }
+
+    fun setDefaultFor(ctx: Context, v: Voice, supertonic: Boolean) {
+        if (supertonic) prefs(ctx).edit().putString("default_style", v.name).apply()
+        else setDefault(ctx, v)
+    }
+
+    /** Everything the library can hold, for folder import/export. */
+    val AUDIO_EXT = setOf("wav", "mp3", "flac", "ogg", "m4a")
+
+    fun isSpeakerFile(name: String): Boolean {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return ext == "json" || ext in AUDIO_EXT
+    }
+
+    /** Imports one picked file, routing by extension. Returns the new voice. */
+    fun importAny(ctx: Context, uri: Uri, displayName: String): Voice =
+        if (displayName.endsWith(".json", true))
+            importStyleFromUri(ctx, uri, displayName.removeSuffix(".json").removeSuffix(".JSON"))
+        else import(ctx, uri, displayName)
 }

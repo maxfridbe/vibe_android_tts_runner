@@ -1,6 +1,8 @@
 package com.maxfridbe.ttsrunner
 
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,14 +13,15 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.color.DynamicColors
-import java.io.File
 
 /** Live conversation mode: type a line, press enter, hear it immediately.
  *
@@ -26,7 +29,8 @@ import java.io.File
  *  in about a second, where the 1.7B model would take half a minute. Lines
  *  are spoken through the same engine service (so the model stays warm
  *  between lines) but marked ephemeral, keeping them out of the job history:
- *  a chat is not something you re-run or save. */
+ *  a chat is not something you re-run or save — unless you ask, which is what
+ *  the per-line menu and the transcript actions are for. */
 class TalkActivity : AppCompatActivity() {
 
     private lateinit var transcript: LinearLayout
@@ -35,6 +39,7 @@ class TalkActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private var voice: String? = null
     private val queued = ArrayDeque<String>()
+    private val said = mutableListOf<String>()
     @Volatile private var speaking = false
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -68,10 +73,20 @@ class TalkActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
-        col.addView(TextView(this).apply {
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(TextView(this).apply {
             text = "Talk"
             textSize = 24f; setTypeface(typeface, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        head.addView(ImageButton(this).apply {
+            setImageResource(R.drawable.ic_share)
+            contentDescription = "Conversation actions"
+            background = null
+            setOnClickListener { conversationMenu(this) }
         })
+        col.addView(head)
         status = TextView(this).apply {
             textSize = 12f; alpha = 0.7f; text = "ready"
             setPadding(0, 0, 0, dp(8))
@@ -94,6 +109,9 @@ class TalkActivity : AppCompatActivity() {
                 minWidth = 0; minimumWidth = 0
                 setPadding(dp(12), 0, dp(12), 0)
                 setOnClickListener { insertTag(tag) }
+                // repeats stack: measured +0.2 s for one <laugh> and +0.9 s for
+                // three, so a long press is the "really laugh" gesture
+                setOnLongClickListener { insertTag(tag.repeat(3)); true }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)
                 ).apply { marginEnd = dp(6) }
@@ -101,6 +119,10 @@ class TalkActivity : AppCompatActivity() {
         }
         tags.addView(tagRow)
         col.addView(tags)
+        col.addView(TextView(this).apply {
+            text = "a tag adds about a fifth of a second — hold one for a long version"
+            textSize = 11f; alpha = 0.6f; setPadding(0, dp(2), 0, dp(2))
+        })
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
@@ -129,9 +151,12 @@ class TalkActivity : AppCompatActivity() {
                 "Talk needs Supertonic (Settings → Model) — the 1.7B model is far too slow for live speech",
                 Toast.LENGTH_LONG).show()
         }
-        voice = VoiceStore.styleList(this).firstOrNull()?.name
+        voice = intent.getStringExtra(EXTRA_VOICE)
+            ?: VoiceStore.defaultFor(this, true)?.name
         if (voice == null) {
             Toast.makeText(this, "No style voice — download Supertonic in Settings", Toast.LENGTH_LONG).show()
+        } else {
+            status.text = "ready · $voice"
         }
     }
 
@@ -160,6 +185,7 @@ class TalkActivity : AppCompatActivity() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
         input.setText("")
+        said.add(text)
         addBubble(text)
         queued.addLast(text)
         pump()
@@ -170,30 +196,127 @@ class TalkActivity : AppCompatActivity() {
     private fun pump() {
         if (speaking) return
         val next = queued.removeFirstOrNull() ?: return
-        val v = voice ?: VoiceStore.styleList(this).firstOrNull()?.name ?: return
         speaking = true
         status.text = "speaking…"
+        speak(next, save = false)
+    }
+
+    private fun speak(text: String, save: Boolean) {
+        val v = voice ?: VoiceStore.styleList(this).firstOrNull()?.name ?: return
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
-            .putExtra(TtsService.EXTRA_TEXT, next)
-            .putExtra(TtsService.EXTRA_TITLE, "Talk")
+            .putExtra(TtsService.EXTRA_TEXT, text)
+            .putExtra(TtsService.EXTRA_TITLE, if (save) text.take(40) else "Talk")
             .putExtra(TtsService.EXTRA_VOICE, v)
             .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
-            .putExtra(TtsService.EXTRA_EPHEMERAL, true)
-            .putExtra(TtsService.EXTRA_SAVE, false))
+            .putExtra(TtsService.EXTRA_EPHEMERAL, !save)
+            .putExtra(TtsService.EXTRA_SAVE, save))
+    }
+
+    // ---- keeping what was said ---------------------------------------------
+
+    private fun copy(text: String, what: String) {
+        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
+            .setPrimaryClip(ClipData.newPlainText("TTS Runner", text))
+        Toast.makeText(this, "$what copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shareText(text: String) {
+        startActivity(Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, text), "Share text"))
+    }
+
+    /** Per-line menu. "Save audio" re-speaks the line as a normal saved job,
+     *  which is what puts a file in Music/TTS Runner — live lines are
+     *  deliberately not written to disk as they play. */
+    private fun lineMenu(anchor: android.view.View, text: String) {
+        PopupMenu(this, anchor).apply {
+            menu.add("Copy")
+            menu.add("Share")
+            menu.add("Save audio")
+            menu.add("Say again")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "Copy" -> copy(text, "Line")
+                    "Share" -> shareText(text)
+                    "Save audio" -> {
+                        speak(text, save = true)
+                        Toast.makeText(this@TalkActivity,
+                            "Saving to Music/TTS Runner…", Toast.LENGTH_SHORT).show()
+                    }
+                    "Say again" -> { queued.addLast(text); pump() }
+                }
+                true
+            }
+            show()
+        }
+    }
+
+    private fun conversationMenu(anchor: android.view.View) {
+        PopupMenu(this, anchor).apply {
+            menu.add("Copy conversation")
+            menu.add("Share conversation")
+            menu.add("Save conversation to file")
+            menu.add("Clear")
+            setOnMenuItemClickListener {
+                val all = said.joinToString("\n")
+                when (it.title) {
+                    "Copy conversation" -> if (all.isBlank()) toast("Nothing said yet") else copy(all, "Conversation")
+                    "Share conversation" -> if (all.isBlank()) toast("Nothing said yet") else shareText(all)
+                    "Save conversation to file" ->
+                        if (all.isBlank()) toast("Nothing said yet") else
+                            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT)
+                                .addCategory(Intent.CATEGORY_OPENABLE)
+                                .setType("text/plain")
+                                .putExtra(Intent.EXTRA_TITLE, "talk.txt"), REQ_SAVE_TEXT)
+                    "Clear" -> { said.clear(); transcript.removeAllViews() }
+                }
+                true
+            }
+            show()
+        }
+    }
+
+    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_SAVE_TEXT && resultCode == RESULT_OK && data?.data != null) {
+            runCatching {
+                contentResolver.openOutputStream(data.data!!)!!.use {
+                    it.write(said.joinToString("\n").toByteArray())
+                }
+            }.onSuccess { toast("Conversation saved") }
+                .onFailure { toast("Save failed: ${it.message}") }
+        }
     }
 
     companion object {
-        /** Supertonic 3's documented expression tags, plus punctuation-style
-         *  pauses that read naturally in the middle of a sentence. */
+        const val EXTRA_VOICE = "voice"
+        private const val REQ_SAVE_TEXT = 21
+
+        /** Supertonic 3's expression tags. The model card says ten exist but
+         *  does not list them, so they were found by probe: synthesise
+         *  "I see. <x> Well then." and transcribe it — a real tag is consumed
+         *  as a vocalisation, anything else is read out as a word
+         *  (`<chuckle>` and `<gasp>` are spoken, so they are not tags).
+         *  `<laughter>` and `<breathe>` are accepted spellings of two of them.
+         *  One tag adds ~0.2 s; repeats stack (three `<laugh>` ran +0.9 s),
+         *  which is why tapping a chip twice is worth suggesting. */
         private val EXPRESSIONS = listOf(
             "😄 laugh" to "<laugh>",
-            "😮‍💨 breath" to "<breath>",
             "😔 sigh" to "<sigh>",
+            "😮‍💨 breath" to "<breath>",
+            "😢 cry" to "<cry>",
+            "🥱 yawn" to "<yawn>",
+            "🤧 cough" to "<cough>",
+            "🤔 hmm" to "<hmm>",
+            "😐 um" to "<um>",
+            "😒 tsk" to "<tsk>",
+            "😘 kiss" to "<kiss>",
             "… pause" to "...",
             "— dash" to " —",
-            "? ask" to "?",
-            "! excl" to "!",
         )
     }
 
@@ -201,6 +324,8 @@ class TalkActivity : AppCompatActivity() {
         transcript.addView(MaterialCardView(this).apply {
             radius = dp(16).toFloat(); cardElevation = 0f; strokeWidth = 1
             setCardBackgroundColor(themeColor(com.google.android.material.R.attr.colorSecondaryContainer))
+            isClickable = true
+            setOnClickListener { lineMenu(this, text) }
             addView(TextView(this@TalkActivity).apply {
                 this.text = text
                 textSize = 16f

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Talk live: a speech bubble mid-sentence — you type, it answers out loud. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <!-- bubble with a tail at the bottom left -->
+    <path android:fillColor="@android:color/white"
+        android:pathData="M20,2H4C2.9,2 2,2.9 2,4v12c0,1.1 0.9,2 2,2h3v4l4.5,-4H20c1.1,0 2,-0.9 2,-2V4C22,2.9 21.1,2 20,2z" />
+    <!-- the three dots read as speech in progress -->
+    <path android:fillColor="?attr/colorSurface"
+        android:pathData="M7.5,11m-1.4,0a1.4,1.4 0,1 1,2.8 0a1.4,1.4 0,1 1,-2.8 0" />
+    <path android:fillColor="?attr/colorSurface"
+        android:pathData="M12,11m-1.4,0a1.4,1.4 0,1 1,2.8 0a1.4,1.4 0,1 1,-2.8 0" />
+    <path android:fillColor="?attr/colorSurface"
+        android:pathData="M16.5,11m-1.4,0a1.4,1.4 0,1 1,2.8 0a1.4,1.4 0,1 1,-2.8 0" />
+</vector>
