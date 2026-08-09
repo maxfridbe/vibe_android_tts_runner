@@ -98,15 +98,20 @@ object SpeakerFolder {
         val tree = uri(ctx) ?: return Result(0, 0, "no folder set")
         return try {
             val inFolder = listNames(ctx, tree)
-            val mine = VoiceStore.styleList(ctx) + VoiceStore.list(ctx)
+            val styles = VoiceStore.styleList(ctx)
+            val refs = VoiceStore.list(ctx)
             var exported = 0
-            for (v in mine) if (v.file.name !in inFolder && mirror(ctx, v)) exported++
+            for (v in styles + refs) if (v.file.name !in inFolder && mirror(ctx, v)) exported++
 
-            val haveNames = mine.map { it.name }.toSet()
+            // a style and a recording may share a name — they are different
+            // speakers to different engines — so each kind is checked separately
+            val haveStyles = styles.map { it.name }.toSet()
+            val haveRefs = refs.map { it.name }.toSet()
             var imported = 0
             for ((name, doc) in inFolder) {
                 if (!VoiceStore.isSpeakerFile(name)) continue
-                if (name.substringBeforeLast('.') in haveNames) continue
+                val isStyle = name.endsWith(".json", true)
+                if (name.substringBeforeLast('.') in (if (isStyle) haveStyles else haveRefs)) continue
                 runCatching { VoiceStore.importAny(ctx, doc, name) }
                     .onSuccess { imported++ }
                     .onFailure { DebugLog.log(ctx, "SpeakerFolder", "import $name failed", it) }
