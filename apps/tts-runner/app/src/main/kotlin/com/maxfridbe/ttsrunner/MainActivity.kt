@@ -493,6 +493,15 @@ class MainActivity : AppCompatActivity() {
             addView(optionsRow)
 
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            // live mode is only sensible on the fast engine
+            if (ModelManager.selectedModel(this@MainActivity)?.engine == "supertonic") {
+                actions.addView(Button(context).apply {
+                    text = "Talk live"
+                    setOnClickListener {
+                        startActivity(Intent(this@MainActivity, TalkActivity::class.java))
+                    }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
             actions.addView(Button(context).apply {
                 text = "Add job"
                 setOnClickListener {
@@ -668,11 +677,15 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         topRow.addView(Button(this).apply {
             text = "Import"
+            // audio -> a cloned Qwen voice; .json -> a Supertonic style,
+            // including one produced by the offline cloning tool
             setOnClickListener {
                 startActivityForResult(
                     Intent(Intent.ACTION_OPEN_DOCUMENT)
                         .addCategory(Intent.CATEGORY_OPENABLE)
-                        .setType("audio/*"), REQ_IMPORT)
+                        .setType("*/*")
+                        .putExtra(Intent.EXTRA_MIME_TYPES,
+                            arrayOf("audio/*", "application/json", "text/json")), REQ_IMPORT)
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         topRow.addView(Button(this).apply {
@@ -960,7 +973,12 @@ class MainActivity : AppCompatActivity() {
                 if (c.moveToFirst() && idx >= 0) c.getString(idx) else null
             } ?: "voice.wav"
             try {
-                VoiceStore.import(this, uri, name)
+                if (name.endsWith(".json", true)) {
+                    val v = VoiceStore.importStyleFromUri(this, uri, name.removeSuffix(".json"))
+                    toast("Style voice “${v.name}” imported — use it with Supertonic")
+                } else {
+                    VoiceStore.import(this, uri, name)
+                }
                 rebuildVoices()
             } catch (e: Exception) {
                 toast("Import failed: ${e.message}")

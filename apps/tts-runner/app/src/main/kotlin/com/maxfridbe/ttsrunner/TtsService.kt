@@ -65,6 +65,7 @@ class TtsService : Service() {
         const val EXTRA_SEED = "seed"        // base seed; 0 = default
         const val EXTRA_INSTRUCT = "instruct" // voice description (VoiceDesign model)
         const val EXTRA_JOB_ID = "job_id"    // resume this job: keep its id and its cached chunks
+        const val EXTRA_EPHEMERAL = "ephemeral"  // live Talk lines: speak, but keep out of job history
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -200,7 +201,9 @@ class TtsService : Service() {
                 val seed = intent.getIntExtra(EXTRA_SEED, 0)
                 val instruct = intent.getStringExtra(EXTRA_INSTRUCT) ?: ""
                 val resumeId = intent.getLongExtra(EXTRA_JOB_ID, 0L)
-                startJob(text, title, voice, backend, save, preview, design, seed, instruct, resumeId)
+                // Talk mode speaks without recording a job
+                val ephemeral = intent.getBooleanExtra(EXTRA_EPHEMERAL, false)
+                startJob(text, title, voice, backend, save, preview || ephemeral, design, seed, instruct, resumeId)
                 // sticky: if this process is killed mid-save, Android restarts
                 // it and onCreate's auto-resume continues the job
                 return if (save) START_STICKY else START_NOT_STICKY

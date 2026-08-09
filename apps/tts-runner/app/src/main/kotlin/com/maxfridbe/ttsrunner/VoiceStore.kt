@@ -31,6 +31,24 @@ object VoiceStore {
     fun styleFile(ctx: Context, name: String): File? =
         File(dir(ctx), "$name.json").takeIf { it.exists() }
 
+    /** Imports a picked style JSON, rejecting anything that is not one: a
+     *  wrong file would otherwise fail much later, mid-job. */
+    fun importStyleFromUri(ctx: Context, uri: Uri, displayName: String): Voice {
+        val text = ctx.contentResolver.openInputStream(uri).use {
+            requireNotNull(it) { "cannot open $uri" }.readBytes().decodeToString()
+        }
+        val o = org.json.JSONObject(text)
+        require(o.has("style_ttl") && o.has("style_dp")) {
+            "not a Supertonic voice style (needs style_ttl and style_dp)"
+        }
+        val safe = displayName.replace(Regex("[^A-Za-z0-9 ._-]"), "_").trim().ifBlank { "style" }
+        var dest = File(dir(ctx), "$safe.json")
+        var i = 2
+        while (dest.exists()) { dest = File(dir(ctx), "$safe ($i).json"); i++ }
+        dest.writeText(text)
+        return Voice(dest.nameWithoutExtension, dest)
+    }
+
     /** Copies a style JSON into the library (from the model download or a
      *  file the user picked). */
     fun importStyle(ctx: Context, src: File, name: String): Voice {

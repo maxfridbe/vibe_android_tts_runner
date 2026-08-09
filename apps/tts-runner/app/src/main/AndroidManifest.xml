@@ -37,6 +37,12 @@
             android:name=".RecordActivity"
             android:exported="false" />
 
+        <!-- live conversation mode: type a line, hear it immediately -->
+        <activity
+            android:name=".TalkActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- share-sheet / text-selection target: floats as a dialog -->
         <activity
             android:name=".ShareActivity"
