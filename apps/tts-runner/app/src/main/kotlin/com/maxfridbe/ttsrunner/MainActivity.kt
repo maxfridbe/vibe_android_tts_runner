@@ -859,18 +859,9 @@ class MainActivity : AppCompatActivity() {
                         if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
                     row.addView(prevBtn)
                     row.addView(iconBtn(R.drawable.ic_chat, "Talk live as this speaker") { startTalk(v.name) })
-                    row.addView(iconBtn(R.drawable.ic_share, "Share this speaker as a file") { shareSpeaker(v) })
-                    row.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
-                    row.addView(iconBtn(R.drawable.ic_delete, "Delete") {
-                        MaterialAlertDialogBuilder(this@MainActivity)
-                            .setMessage("Delete speaker “${v.name}”?")
-                            .setPositiveButton("Delete") { _, _ ->
-                                val gone = v.file.name
-                                VoiceStore.delete(this@MainActivity, v); rebuildVoices()
-                                thread { SpeakerFolder.remove(this@MainActivity, gone) }
-                            }
-                            .setNegativeButton("Cancel", null).show()
-                    })
+                    lateinit var moreBtn: ImageButton
+                    moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
+                    row.addView(moreBtn)
                     addView(row)
                     addView(TextView(context).apply {
                         text = styleSubtitle(v)
@@ -914,23 +905,14 @@ class MainActivity : AppCompatActivity() {
                 prevBtn = iconBtn(R.drawable.ic_play,
                     if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
                 head.addView(prevBtn)
-                head.addView(iconBtn(R.drawable.ic_share, "Share this speaker as a file") { shareSpeaker(v) })
                 if (VoiceCloner.available(this@MainActivity)) {
                     head.addView(iconBtn(R.drawable.ic_add, "Clone to a Supertonic voice") {
                         cloneToSupertonic(v)
                     })
                 }
-                head.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
-                head.addView(iconBtn(R.drawable.ic_delete, "Delete") {
-                    MaterialAlertDialogBuilder(this@MainActivity)
-                        .setMessage("Delete voice “${v.name}”?")
-                        .setPositiveButton("Delete") { _, _ ->
-                            val gone = v.file.name
-                                VoiceStore.delete(this@MainActivity, v); rebuildVoices()
-                                thread { SpeakerFolder.remove(this@MainActivity, gone) }
-                        }
-                        .setNegativeButton("Cancel", null).show()
-                })
+                lateinit var moreBtn: ImageButton
+                moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
+                head.addView(moreBtn)
                 addView(head)
                 val bits = mutableListOf("${v.file.length() / 1024} KB")
                 if (!hasPreview) bits.add("no preview for $modelId yet")
@@ -953,6 +935,37 @@ class MainActivity : AppCompatActivity() {
             ?.let { bits.add("similarity ${"%.2f".format(it)}") }
         if (bits.isEmpty()) bits.add("style file")
         return bits.joinToString(" · ")
+    }
+
+    /** The rest of a speaker's actions. They live behind one button because a
+     *  phone-width row cannot hold five icons and still show a name. */
+    private fun speakerMenu(anchor: View, v: VoiceStore.Voice) {
+        android.widget.PopupMenu(this, anchor).apply {
+            menu.add("Share as a file")
+            menu.add("Save to folder…")
+            menu.add("Edit…")
+            menu.add("Delete")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "Share as a file" -> shareSpeaker(v)
+                    "Save to folder…" -> {
+                        exportOne = v
+                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_EXPORT_DIR)
+                    }
+                    "Edit…" -> editSpeakerDialog(v)
+                    "Delete" -> MaterialAlertDialogBuilder(this@MainActivity)
+                        .setMessage("Delete speaker “${v.name}”?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            val gone = v.file.name
+                            VoiceStore.delete(this@MainActivity, v); rebuildVoices()
+                            thread { SpeakerFolder.remove(this@MainActivity, gone) }
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                }
+                true
+            }
+            show()
+        }
     }
 
     /** Hands the speaker out as the file it actually is — a style JSON or the
