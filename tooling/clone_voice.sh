@@ -14,6 +14,7 @@
 # transcript), so export that text with the recording and the pipeline is
 # fully deterministic.
 set -euo pipefail
+SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # resolve before any cd
 
 REF=${1:?usage: clone_voice.sh <reference.wav> [transcript] [init-style]}
 TEXT=${2:-}
@@ -103,7 +104,6 @@ done
 
 echo
 echo "scoring candidates on held-out sentences ..."
-SELF=$(cd "$(dirname "$0")" && pwd)
 "$PY" "$SELF/eval_style.py" "$REF" "${CANDIDATES[@]}" | tee "$OUT/$NAME.eval.txt"
 
 BEST=$(tail -1 "$OUT/$NAME.eval.txt" | sed 's/^best: //')
