@@ -26,6 +26,7 @@ manifold where styles actually synthesise as speech.
     train_encoder.py --pairs pairs.npz --steps 20000 --out encoder.pt
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -100,6 +101,11 @@ class Encoder(nn.Module):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", required=True, help="npz from gen_style_pairs.py (fits the basis)")
+    ap.add_argument("--targets", default=None,
+                    help="npz of speaker embeddings to fit (gen_speaker_bank.py); "
+                         "defaults to the pairs' own embeddings")
+    ap.add_argument("--val-frac", type=float, default=0.1, help="speakers held out from training")
+    ap.add_argument("--val-every", type=int, default=250)
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--k", type=int, default=64)
@@ -120,8 +126,21 @@ def main():
 
     d = np.load(args.pairs, allow_pickle=True)
     basis = StyleBasis(d["ttl"], d["dp"], args.k, dev)
-    emb_bank = torch.tensor(d["emb"], device=dev)          # targets for sampling
-    ttl_bank = torch.tensor(d["ttl"], device=dev)
+
+    # Targets decide what the encoder can reach. The pairs' own embeddings only
+    # span the preset simplex; a Qwen-rolled bank covers far more speaker space
+    # (measured mean pairwise cosine 0.14 vs 0.27), which is the whole point of
+    # using a second model family to generate them.
+    tgt = np.load(args.targets, allow_pickle=True)["emb"] if args.targets else d["emb"]
+    tgt = np.asarray(tgt, dtype=np.float32)
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(len(tgt))
+    n_val = max(4, int(len(tgt) * args.val_frac))
+    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    emb_bank = torch.tensor(tgt[train_idx], device=dev)
+    val_bank = torch.tensor(tgt[val_idx], device=dev)
+    print(f"targets: {len(emb_bank)} train / {len(val_bank)} held-out speakers"
+          f" from {args.targets or args.pairs}")
     dp_bank = torch.tensor(d["dp"], device=dev)
 
     synth = DiffSynth(os.path.join(WORK, "assets/onnx"), device=str(dev))
@@ -144,6 +163,7 @@ def main():
           f"for {args.steps} steps, batch {args.batch}")
     t0 = time.time()
     run_cos, run_n = 0.0, 0
+    history, best_val = [], -1.0
     for step in range(1, args.steps + 1):
         idx = torch.randint(0, len(emb_bank), (args.batch,), device=dev)
         target = emb_bank[idx]                                   # what the voice should sound like
@@ -164,11 +184,13 @@ def main():
         emb = spk.embed(w16, lens)
         cos = F.cosine_similarity(emb, target).mean()
 
-        # anchor tempo to the sampled style's own duration so the encoder does
-        # not buy identity with unbounded slow-down (the failure the cloner's
-        # notes call out)
+        # anchor tempo to a reference style's duration so the encoder does not
+        # buy identity with unbounded slow-down (the failure the cloner's notes
+        # call out). Bank targets carry no ground-truth dp, so the preset pool
+        # supplies the tempo reference.
         with torch.no_grad():
-            ref_dur = synth.durations(prep_b["text_ids"], dp_bank[idx], prep_b["text_mask"], 1.05)
+            dref = dp_bank[torch.randint(0, len(dp_bank), (args.batch,), device=dev)]
+            ref_dur = synth.durations(prep_b["text_ids"], dref, prep_b["text_mask"], 1.05)
         loss = (1.0 - cos) + args.w_dur * ((dur / ref_dur.clamp(min=0.1) - 1.0) ** 2).mean()
 
         opt.zero_grad(set_to_none=True)
@@ -178,6 +200,33 @@ def main():
         sched.step()
 
         run_cos += float(cos.detach()); run_n += 1
+        if step % args.val_every == 0 or step == args.steps:
+            enc.eval()
+            with torch.no_grad():
+                vcos = []
+                for j in range(0, len(val_bank), args.batch):
+                    vt = val_bank[j:j + args.batch]
+                    if len(vt) < args.batch:
+                        break
+                    vttl, vdp = basis.decode(enc(vt))
+                    vw, _, _ = synth.synth(vttl, vdp, prep_b)
+                    if vw.dim() == 1:
+                        vw = vw.unsqueeze(0)
+                    ve = spk.embed(resample(vw), torch.ones(vw.shape[0], device=dev))
+                    vcos.append(float(F.cosine_similarity(ve, vt).mean()))
+            enc.train()
+            v = float(np.mean(vcos)) if vcos else float("nan")
+            history.append({"step": step, "train_cos": run_cos / max(run_n, 1), "val_cos": v})
+            with open(args.out + ".metrics.json", "w") as f:
+                json.dump(history, f, indent=1)
+            print(f"  [val] step {step}  held-out cos {v:.4f}", flush=True)
+            if v > best_val:
+                best_val = v
+                torch.save({"model": enc.state_dict(), "k": basis.k,
+                            "basis": basis.basis.cpu(), "mean": basis.mean.cpu(),
+                            "scale": basis.scale.cpu(), "val_cos": v, "step": step,
+                            "ttl_shape": basis.ttl_shape, "dp_shape": basis.dp_shape},
+                           args.out + ".best")
         if step % args.log_every == 0:
             el = time.time() - t0
             print(f"step {step:6d}  cos {run_cos/run_n:.4f}  loss {float(loss):.4f}  "

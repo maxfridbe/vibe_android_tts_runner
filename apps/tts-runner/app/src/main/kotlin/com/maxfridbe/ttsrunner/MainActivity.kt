@@ -783,6 +783,11 @@ class MainActivity : AppCompatActivity() {
                             .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
                     }
                 })
+                if (VoiceCloner.available(this@MainActivity)) {
+                    head.addView(iconBtn(R.drawable.ic_add, "Clone to a Supertonic voice") {
+                        cloneToSupertonic(v)
+                    })
+                }
                 head.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
                 head.addView(iconBtn(R.drawable.ic_delete, "Delete") {
                     MaterialAlertDialogBuilder(this@MainActivity)
@@ -803,6 +808,33 @@ class MainActivity : AppCompatActivity() {
             voicesList.addView(TextView(this).apply {
                 text = "No voices yet — import a recording or design one."; alpha = 0.6f
             })
+        }
+    }
+
+    /** Predicts a Supertonic style from this reference recording, on the phone.
+     *  Experimental: the desktop cloner is still the quality reference, and the
+     *  dialog says so rather than pretending otherwise. */
+    private fun cloneToSupertonic(v: VoiceStore.Voice) {
+        toast("Cloning “${v.name}” on device…")
+        thread {
+            val cloner = VoiceCloner(this)
+            val out = cloner.cloneToStyle(v.file, "${v.name} (device clone)")
+            cloner.close()
+            runOnUiThread {
+                if (out == null) {
+                    toast("Cloning failed — see Settings → Copy log")
+                } else {
+                    rebuildVoices()
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle("Cloned: ${out.name}")
+                        .setMessage("Predicted a Supertonic style from ${v.name}. " +
+                            "Switch the model to Supertonic 3 and pick this voice to hear it.\n\n" +
+                            "This is the experimental on-device encoder — the desktop " +
+                            "cloning tool still produces closer voices.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
         }
     }
 

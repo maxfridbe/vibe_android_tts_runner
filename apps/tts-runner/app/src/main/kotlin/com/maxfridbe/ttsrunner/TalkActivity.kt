@@ -83,6 +83,25 @@ class TalkActivity : AppCompatActivity() {
         col.addView(scroll, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        // Supertonic reads bracketed expression tags inline, so a row of one-tap
+        // inserts sits right above the keyboard where they are actually used.
+        val tags = android.widget.HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val tagRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((label, tag) in EXPRESSIONS) {
+            tagRow.addView(Button(this).apply {
+                text = label
+                textSize = 12f
+                minWidth = 0; minimumWidth = 0
+                setPadding(dp(12), 0, dp(12), 0)
+                setOnClickListener { insertTag(tag) }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)
+                ).apply { marginEnd = dp(6) }
+            })
+        }
+        tags.addView(tagRow)
+        col.addView(tags)
+
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
@@ -126,6 +145,17 @@ class TalkActivity : AppCompatActivity() {
         runCatching { unregisterReceiver(statusReceiver) }
     }
 
+    /** Drops a tag at the cursor (or over the selection) and keeps focus in the
+     *  field, so tapping one never costs the keyboard or the caret position. */
+    private fun insertTag(tag: String) {
+        val start = input.selectionStart.coerceAtLeast(0)
+        val end = input.selectionEnd.coerceAtLeast(0)
+        val text = input.text
+        val pad = if (start > 0 && text.getOrNull(start - 1)?.isWhitespace() == false) " $tag" else tag
+        text.replace(minOf(start, end), maxOf(start, end), "$pad ")
+        input.requestFocus()
+    }
+
     private fun say() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
@@ -151,6 +181,20 @@ class TalkActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
             .putExtra(TtsService.EXTRA_EPHEMERAL, true)
             .putExtra(TtsService.EXTRA_SAVE, false))
+    }
+
+    companion object {
+        /** Supertonic 3's documented expression tags, plus punctuation-style
+         *  pauses that read naturally in the middle of a sentence. */
+        private val EXPRESSIONS = listOf(
+            "😄 laugh" to "<laugh>",
+            "😮‍💨 breath" to "<breath>",
+            "😔 sigh" to "<sigh>",
+            "… pause" to "...",
+            "— dash" to " —",
+            "? ask" to "?",
+            "! excl" to "!",
+        )
     }
 
     private fun addBubble(text: String) {
