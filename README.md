@@ -173,12 +173,20 @@ Measured with the 1.7B model, 44-character sentence:
 | Galaxy Z Fold5 | OpenCL, Q4_0 | ~1.7× faster talker than CPU |
 | Galaxy S24 FE (Exynos 2400e / Xclipse 940) | Vulkan | 3.4 s audio in ~21 s |
 | Galaxy S24 FE — **Supertonic 3** | CPU | 5.7 s audio in 2.7 s (RTF 0.47) |
+| Galaxy Z Fold5 — **Supertonic 3** | CPU | 33 s audio in 16 s over 4 chunks (RTF 0.48) |
 
-ONNX Runtime providers for Supertonic on the S24 FE, same 90-character
-sentence: plain **CPU 2.71 s**, **NNAPI 2.70 s** (loads, but the Xclipse
-driver places nothing — identical timing), **XNNPACK 5.65 s** (twice as slow
-on these graphs). CPU is therefore the default; picking a GPU engine still
-tries NNAPI, which is the path that can pay off on other vendors' drivers.
+ONNX Runtime providers for Supertonic, same 90-character sentence:
+
+| Device | CPU | NNAPI | XNNPACK |
+|---|---|---|---|
+| S24 FE (Xclipse 940) | **2.71 s** | 2.70 s | 5.65 s |
+| Z Fold5 (Adreno 740) | **2.92 s** | 3.19 s | — |
+
+NNAPI loads on both but accelerates neither: ORT falls back to CPU for the
+ops these graphs use, so the timing is unchanged (Adreno is marginally
+worse). XNNPACK is twice as slow here. CPU is therefore the default, while a
+GPU pick still routes to NNAPI — the path that could pay off on a driver that
+does support the ops.
 
 - **Adreno Vulkan** cannot compile llama.cpp's compute shaders
   (`createComputePipeline: ErrorUnknown`) — use OpenCL there. Adreno's OpenCL
