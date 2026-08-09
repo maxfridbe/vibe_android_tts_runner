@@ -19,6 +19,29 @@ object VoiceStore {
             ?.map { Voice(it.nameWithoutExtension, it) }
             ?: emptyList()
 
+    /** Supertonic style voices live beside the reference audio as .json.
+     *  They are a different kind of voice: a style vector, not a recording,
+     *  so only the Supertonic engine can use them. */
+    fun styleList(ctx: Context): List<Voice> =
+        dir(ctx).listFiles { f -> f.isFile && f.extension.lowercase() == "json" }
+            ?.sortedBy { it.name.lowercase() }
+            ?.map { Voice(it.nameWithoutExtension, it) }
+            ?: emptyList()
+
+    fun styleFile(ctx: Context, name: String): File? =
+        File(dir(ctx), "$name.json").takeIf { it.exists() }
+
+    /** Copies a style JSON into the library (from the model download or a
+     *  file the user picked). */
+    fun importStyle(ctx: Context, src: File, name: String): Voice {
+        val safe = name.replace(Regex("[^A-Za-z0-9 ._-]"), "_").trim().ifBlank { "style" }
+        var dest = File(dir(ctx), "$safe.json")
+        var i = 2
+        while (dest.exists()) { dest = File(dir(ctx), "$safe ($i).json"); i++ }
+        src.copyTo(dest)
+        return Voice(dest.nameWithoutExtension, dest)
+    }
+
     fun import(ctx: Context, uri: Uri, displayName: String): Voice {
         val safe = displayName.replace(Regex("[^A-Za-z0-9 ._-]"), "_").ifBlank { "voice" }
         val ext = safe.substringAfterLast('.', "").lowercase().ifBlank { "wav" }

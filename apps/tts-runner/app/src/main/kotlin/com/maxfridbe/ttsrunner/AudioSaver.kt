@@ -14,7 +14,7 @@ import android.provider.MediaStore
  *  MediaStore. Android ships no MP3 encoder; AAC-in-m4a is the universally
  *  playable equivalent. The entry stays IS_PENDING until finish() so players
  *  never see a half-written file. */
-class AudioSaver(private val context: Context, title: String) {
+class AudioSaver(private val context: Context, title: String, private val sampleRate: Int = 24000) {
     private val fileName =
         title.replace(Regex("[^\\w .-]"), " ").trim().ifBlank { "tts" }.take(60) + ".m4a"
     val uri: Uri
@@ -33,7 +33,9 @@ class AudioSaver(private val context: Context, title: String) {
             ?: throw IllegalStateException("MediaStore insert failed")
         pfd = context.contentResolver.openFileDescriptor(uri, "w")
             ?: throw IllegalStateException("cannot open $uri for writing")
-        encoder = AacM4aWriter(pfd, 24000)
+        // must match the engine that produced the PCM (24 kHz Qwen codec,
+        // 44.1 kHz Supertonic vocoder) or the file plays at the wrong speed
+        encoder = AacM4aWriter(pfd, sampleRate)
     }
 
     fun write(pcm: ByteArray) = encoder.write(pcm)

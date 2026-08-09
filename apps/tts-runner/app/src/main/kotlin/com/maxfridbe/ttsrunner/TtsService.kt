@@ -68,9 +68,13 @@ class TtsService : Service() {
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
-        private const val SAMPLE_RATE = 24000
+        private const val SAMPLE_RATE = 24000   // qwen3-tts codec rate
     }
 
+    /** Output rate of the job in flight: 24 kHz for Qwen's codec, 44.1 kHz for
+     *  Supertonic's vocoder. Playback, the WAV header and the AAC encoder all
+     *  read it, so a mismatch would play everything at the wrong pitch. */
+    @Volatile private var jobRate = SAMPLE_RATE
     @Volatile private var stopRequested = false
     @Volatile private var working = false
     @Volatile private var bound = false
@@ -276,6 +280,15 @@ class TtsService : Service() {
             } else vd
         } else ModelManager.selectedModel(this)
         if (model == null) {
+            val have = ModelManager.CATALOG.joinToString(", ") {
+                "${it.id}=${ModelManager.isDownloaded(this, it)}"
+            }
+            val stDir = ModelManager.supertonicDir(this)
+            val detail = ModelManager.SUPERTONIC_FILES.joinToString(", ") { (_, n) ->
+                "$n=${java.io.File(stDir, n).exists()}"
+            }
+            DebugLog.log(this, "TtsService",
+                "no model selected; downloaded: $have\n  dir=$stDir\n  $detail")
             fail("No model downloaded — open TTS Runner first"); return
         }
         // Backends: cpu | opencl | vulkan. OpenCL (Adreno) is only worthwhile
@@ -303,11 +316,21 @@ class TtsService : Service() {
         }
         marker.writeText(backend)
         DebugLog.log(this, "TtsService", "job start: ${text.length} chars, voice=$voiceName backend=$backend (wanted $backendWanted)")
+        // Supertonic voices are style files, not recordings: resolve one here
+        // and let the reference-audio check below apply only to Qwen.
+        val supertonicJob = model.engine == "supertonic"
+        jobRate = SAMPLE_RATE
+        if (supertonicJob) {
+            supertonicStyle = resolveStyle(voiceName)
+            if (supertonicStyle == null) {
+                fail("No Supertonic voice style found — re-download the model in Settings"); return
+            }
+        }
         // design mode runs with NO speaker reference: the model invents a
         // voice from the seed; the UI can then adopt the output as a voice
         val voice = VoiceStore.list(this).find { it.name == voiceName }
-            ?: if (design) null else VoiceStore.defaultVoice(this)
-        if (voice == null && !design) {
+            ?: if (design || supertonicJob) null else VoiceStore.defaultVoice(this)
+        if (voice == null && !design && !supertonicJob) {
             fail("No voice imported — add one in TTS Runner"); return
         }
         DebugLog.log(this, "TtsService", "model=${model.id} voice=${voice?.file?.name ?: "(designing, seed=$seed)"}")
@@ -324,7 +347,7 @@ class TtsService : Service() {
             if (resumeId != 0L) JobStore.update(this, jobId) {
                 it.status = "running"; it.backend = backend; it.error = ""; it.chunksTotal = chunks.size
             } else JobStore.add(this, JobStore.Job(
-                id = jobId, title = title, text = text, voice = voice!!.name,
+                id = jobId, title = title, text = text, voice = voice?.name ?: voiceName,
                 model = model.id, backend = backend, save = save, status = "running",
                 chunksTotal = chunks.size))
         }
@@ -342,7 +365,7 @@ class TtsService : Service() {
             runCatching {
                 pendingFile().writeText(org.json.JSONObject()
                     .put("id", jobId).put("text", text).put("title", title)
-                    .put("voice", voice!!.name).put("backend", backend)
+                    .put("voice", voice?.name ?: voiceName).put("backend", backend)
                     .put("attempts", 0)
                     .put("cachedAtLastAttempt", JobStore.cachedChunks(this, jobId) - 1)
                     .toString())
@@ -370,6 +393,9 @@ class TtsService : Service() {
                   else "$backend failed to start: $why — resume on CPU or pick another engine")
             return
         }
+        // the engine's own rate now that it is loaded: everything downstream
+        // (playback, WAV header, AAC encoder, stats) reads jobRate
+        if (supertonicJob) jobRate = supertonic?.sampleRate ?: 44100
         // ETA is derived from generation speed, so the clock starts after the
         // one-off model load
         jobStartMs = System.currentTimeMillis()
@@ -377,7 +403,7 @@ class TtsService : Service() {
         val queue = LinkedBlockingQueue<ByteArray>(2)
         val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }
         val saver = if (!save) null else try {
-            AudioSaver(this, title)
+            AudioSaver(this, title, jobRate)
         } catch (e: Exception) {
             DebugLog.log(this, "TtsService", "AudioSaver init failed", e)
             fail("Could not create output file: ${e.message}"); return
@@ -413,8 +439,11 @@ class TtsService : Service() {
                 }
                 // design rolls skip the plausibility guard: any voice is valid, and
                 // re-rolling a design triples an already slow job for nothing
-                pcm = if (design) generateOnce(chunk, "", instruct, seed, onFrames)
-                      else generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
+                pcm = when {
+                    model.engine == "supertonic" -> generateSupertonic(chunk, seed)
+                    design -> generateOnce(chunk, "", instruct, seed, onFrames)
+                    else -> generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
+                }
                 if (pcm == null) {
                     if (!stopRequested) {
                         val why = TtsEngine.nLastError().ifBlank { "generation failed" }
@@ -430,10 +459,10 @@ class TtsService : Service() {
                 genMs += System.currentTimeMillis() - t0
             }
             DebugLog.log(this, "TtsService", "chunk ${i + 1}/${chunks.size}: ${chunk.length} chars -> " +
-                "${"%.1f".format(pcm!!.size / 2.0 / SAMPLE_RATE)}s audio in " +
+                "${"%.1f".format(pcm!!.size / 2.0 / jobRate)}s audio in " +
                 (if (reused) "0 ms (cached)" else "${System.currentTimeMillis() - t0} ms"))
             val bytes = pcm!!
-            audioSecs += bytes.size / 2.0 / SAMPLE_RATE
+            audioSecs += bytes.size / 2.0 / jobRate
             chunksDone++
             runCatching { pcmFile().appendBytes(bytes) }
             if (saver != null) armResumeAlarm(this)   // push the dead-man deadline out
@@ -572,7 +601,7 @@ class TtsService : Service() {
                 h.put("RIFF".toByteArray()); h.putInt(36 + len.toInt())
                 h.put("WAVE".toByteArray()); h.put("fmt ".toByteArray())
                 h.putInt(16); h.putShort(1); h.putShort(1)
-                h.putInt(SAMPLE_RATE); h.putInt(SAMPLE_RATE * 2)
+                h.putInt(jobRate); h.putInt(jobRate * 2)
                 h.putShort(2); h.putShort(16)
                 h.put("data".toByteArray()); h.putInt(len.toInt())
                 out.write(h.array())
@@ -671,10 +700,51 @@ class TtsService : Service() {
         return best
     }
 
+    // ---- Supertonic (ONNX) engine -----------------------------------------
+
+    private var supertonic: SupertonicEngine? = null
+    private var supertonicStyle: SupertonicEngine.Style? = null
+
+    /** Resolves the voice for a Supertonic job: a style JSON, either one the
+     *  user imported into the voice library or one of the published styles. */
+    private fun resolveStyle(voiceName: String): SupertonicEngine.Style? {
+        val fromLibrary = VoiceStore.styleFile(this, voiceName)
+        if (fromLibrary != null) return SupertonicEngine.loadStyle(fromLibrary)
+        val styles = ModelManager.supertonicStyles(this)
+        val match = styles.find { it.nameWithoutExtension.equals(voiceName, true) }
+            ?: styles.firstOrNull() ?: return null
+        return SupertonicEngine.loadStyle(match)
+    }
+
+    private fun generateSupertonic(chunk: String, seed: Int): ByteArray? {
+        val eng = supertonic ?: return null
+        val style = supertonicStyle ?: return null
+        return eng.generate(chunk, style, steps = 8, speed = 1.05f, seed = seed)
+    }
+
     private var loadedKey: String? = null
     private fun ensureLoaded(model: ModelManager.CatalogModel, backend: String): Boolean {
         val key = "${model.id}|$backend"
         if (loadedKey == key) return true
+        if (model.engine == "supertonic") {
+            TtsEngine.nUnload()          // free the llama.cpp side first
+            broadcast("loading", 0, 0, model.label)
+            val eng = supertonic ?: SupertonicEngine(this).also { supertonic = it }
+            // "vulkan"/"opencl" mean "use the accelerator" — for ORT that is NNAPI
+            val ep = if (backend == "cpu") "cpu" else "nnapi"
+            val t0 = System.currentTimeMillis()
+            var ok = eng.load(ModelManager.supertonicDir(this), ep)
+            if (!ok && ep != "cpu") {
+                DebugLog.log(this, "TtsService", "NNAPI unavailable; loading Supertonic on CPU")
+                broadcast("note", 0, 0, "NNAPI not usable here — Supertonic on CPU")
+                ok = eng.load(ModelManager.supertonicDir(this), "cpu")
+            }
+            DebugLog.log(this, "TtsService",
+                "supertonic load($ep) -> $ok in ${System.currentTimeMillis() - t0} ms")
+            loadedKey = if (ok) key else null
+            return ok
+        }
+        supertonic?.close(); supertonic = null
         TtsEngine.nUnload()
         broadcast("loading", 0, 0, model.label)
         DebugLog.log(this, "TtsService", "devices:\n${runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "$it" }}")
@@ -707,7 +777,7 @@ class TtsService : Service() {
 
     private fun playLoop(queue: LinkedBlockingQueue<ByteArray>) {
         val minBuf = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            jobRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -715,10 +785,10 @@ class TtsService : Service() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(
                 AudioFormat.Builder()
-                    .setSampleRate(SAMPLE_RATE)
+                    .setSampleRate(jobRate)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(maxOf(minBuf, SAMPLE_RATE)) // >= 0.5 s
+            .setBufferSizeInBytes(maxOf(minBuf, jobRate)) // >= 0.5 s
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         DebugLog.log(this, "TtsService", "AudioTrack created: state=${track.state} session=${track.audioSessionId} minBuf=$minBuf")
@@ -743,7 +813,7 @@ class TtsService : Service() {
             if (!stopRequested) {
                 track.stop() // drains remaining buffered audio
             }
-            DebugLog.log(this, "TtsService", "playback done: ${played / 2 / SAMPLE_RATE}s written, underruns=${track.underrunCount}")
+            DebugLog.log(this, "TtsService", "playback done: ${played / 2 / jobRate}s written, underruns=${track.underrunCount}")
         } catch (t: Throwable) {
             DebugLog.log(this, "TtsService", "playLoop crashed", t)
         } finally {
@@ -771,6 +841,9 @@ class TtsService : Service() {
     }
 
     private fun fail(msg: String) {
+        // a job that fails before the first log line (no model, no voice) used
+        // to leave no trace at all, which is exactly when the log is wanted
+        DebugLog.log(this, "TtsService", "job failed: $msg")
         broadcast("error", 0, 0, msg)
         update(notif("TTS Runner", msg, 0, 0))
     }

@@ -540,7 +540,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshVoiceLabel() {
         if (!::voicePickBtn.isInitialized) return
-        val name = pickedVoice ?: VoiceStore.defaultVoice(this)?.name
+        val name = pickedVoice?.takeIf { it in voicesForCurrentModel() }
+            ?: voicesForCurrentModel().firstOrNull()
+            ?: VoiceStore.defaultVoice(this)?.name
         voicePickBtn.text =
             if (name == null) "Voice: none ▾" else "${VoiceStore.icon(this, name)} $name ▾"
     }
@@ -549,9 +551,22 @@ class MainActivity : AppCompatActivity() {
     private fun voiceLabels(names: List<String>) =
         names.map { "${VoiceStore.icon(this, it)}  $it" }.toTypedArray()
 
+    /** Voices the selected model can actually speak with: Supertonic uses
+     *  style files, Qwen uses reference recordings. */
+    private fun voicesForCurrentModel(): List<String> {
+        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
+        return if (supertonic) VoiceStore.styleList(this).map { it.name }
+               else VoiceStore.list(this).map { it.name }
+    }
+
     private fun pickVoiceDialog() {
-        val names = VoiceStore.list(this).map { it.name }
-        if (names.isEmpty()) { toast("Import or design a voice first (Voices tab)"); return }
+        val names = voicesForCurrentModel()
+        if (names.isEmpty()) {
+            toast(if (ModelManager.selectedModel(this)?.engine == "supertonic")
+                      "No style voices — re-download Supertonic in Settings"
+                  else "Import or design a voice first (Voices tab)")
+            return
+        }
         MaterialAlertDialogBuilder(this)
             .setTitle("Voice for this job")
             .setItems(voiceLabels(names)) { _, which ->
@@ -562,9 +577,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null): Boolean {
+        val model = ModelManager.selectedModel(this)
+        if (model == null) { toast("Download a model first (Settings tab)"); return false }
+        if (model.engine == "supertonic") {
+            val style = voiceName?.takeIf { VoiceStore.styleFile(this, it) != null }
+                ?: VoiceStore.styleList(this).firstOrNull()?.name
+            if (style == null) { toast("No style voices — re-download Supertonic in Settings"); return false }
+            startForegroundService(Intent(this, TtsService::class.java)
+                .setAction(TtsService.ACTION_SPEAK)
+                .putExtra(TtsService.EXTRA_TEXT, text)
+                .putExtra(TtsService.EXTRA_TITLE, title)
+                .putExtra(TtsService.EXTRA_VOICE, style)
+                .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
+                .putExtra(TtsService.EXTRA_SAVE, save))
+            ui.postDelayed({ refreshJobsIfChanged() }, 500)
+            return true
+        }
         val v = voiceName?.let { n -> VoiceStore.list(this).find { it.name == n } } ?: VoiceStore.defaultVoice(this)
         if (v == null) { toast("Import or design a voice first (Voices tab)"); return false }
-        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return false }
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, text)
@@ -655,11 +685,58 @@ class MainActivity : AppCompatActivity() {
         return scroll
     }
 
+    /** Supertonic ships style voices with the model; surface them in the
+     *  library the first time they appear so they are pickable like any voice. */
+    private fun adoptSupertonicStyles() {
+        val have = VoiceStore.styleList(this).map { it.name }.toSet()
+        for (f in ModelManager.supertonicStyles(this)) {
+            if (f.nameWithoutExtension !in have) {
+                runCatching { VoiceStore.importStyle(this, f, f.nameWithoutExtension) }
+            }
+        }
+    }
+
     private fun rebuildVoices() {
         if (!::voicesList.isInitialized) return
+        adoptSupertonicStyles()
         voicesList.removeAllViews()
         val def = VoiceStore.defaultVoice(this)
         val modelId = currentModelId()
+        val styleVoices = VoiceStore.styleList(this)
+        if (styleVoices.isNotEmpty()) {
+            voicesList.addView(TextView(this).apply {
+                text = "Supertonic style voices"
+                textSize = 12f; alpha = 0.7f; setPadding(0, dp(4), 0, dp(4))
+            })
+            for (v in styleVoices) {
+                voicesList.addView(card {
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    }
+                    row.addView(TextView(context).apply {
+                        text = VoiceStore.icon(this@MainActivity, v.name)
+                        textSize = 20f; setPadding(dp(2), 0, dp(8), 0)
+                    })
+                    row.addView(TextView(context).apply {
+                        text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+                        maxLines = 1
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    row.addView(iconBtn(R.drawable.ic_edit, "Edit speaker") { editSpeakerDialog(v) })
+                    row.addView(iconBtn(R.drawable.ic_delete, "Delete") {
+                        v.file.delete(); rebuildVoices()
+                    })
+                    addView(row)
+                    addView(TextView(context).apply {
+                        text = "style voice · works with Supertonic 3"
+                        textSize = 12f; alpha = 0.6f
+                    })
+                })
+            }
+            voicesList.addView(TextView(this).apply {
+                text = "Cloned voices (reference audio)"
+                textSize = 12f; alpha = 0.7f; setPadding(0, dp(12), 0, dp(4))
+            })
+        }
         for (v in VoiceStore.list(this)) {
             voicesList.addView(card {
                 val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }

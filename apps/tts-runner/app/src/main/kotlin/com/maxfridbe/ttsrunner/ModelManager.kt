@@ -34,7 +34,33 @@ object ModelManager {
         /** VoiceDesign: no speaker encoder, so it can't clone voices — it is
          *  only used by the voice designer, never for regular TTS jobs. */
         val designOnly: Boolean = false,
+        /** Supertonic runs ONNX graphs, not llama.cpp GGUFs: several files,
+         *  its own engine, and style-file voices instead of reference audio. */
+        val engine: String = "qwen",
+        val extraFiles: List<Pair<String, String>> = emptyList(),  // url to filename
     )
+
+    /** Supertonic 3: 99M params over four ONNX graphs (~398 MB), 44.1 kHz,
+     *  well under real time on phone CPU. */
+    private const val ST_BASE =
+        "https://huggingface.co/Supertone/supertonic-3/resolve/main/onnx"
+
+    val SUPERTONIC_FILES = listOf(
+        "$ST_BASE/duration_predictor.onnx" to "duration_predictor.onnx",
+        "$ST_BASE/text_encoder.onnx" to "text_encoder.onnx",
+        "$ST_BASE/vector_estimator.onnx" to "vector_estimator.onnx",
+        "$ST_BASE/vocoder.onnx" to "vocoder.onnx",
+        "$ST_BASE/tts.json" to "tts.json",
+        "$ST_BASE/unicode_indexer.json" to "unicode_indexer.json",
+    )
+
+    /** The published voice styles — Supertonic's equivalent of voices. */
+    private const val ST_STYLES =
+        "https://huggingface.co/Supertone/supertonic-3/resolve/main/voice_styles"
+    val SUPERTONIC_STYLES = listOf("F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5")
+    fun styleUrl(name: String) = "$ST_STYLES/$name.json"
+
+    fun supertonicDir(ctx: Context) = File(modelsDir(ctx), "supertonic-3").apply { mkdirs() }
 
     val CATALOG = listOf(
         CatalogModel(
@@ -79,6 +105,15 @@ object ModelManager {
             totalBytes = 1_035_965_568L + 422_392_192L,
             designOnly = true,
         ),
+        CatalogModel(
+            id = "supertonic-3",
+            label = "Supertonic 3 (400 MB — fast, 31 languages, style voices)",
+            talkerUrl = "", talkerFile = "supertonic-3/vocoder.onnx",
+            mmprojUrl = "", mmprojFile = "supertonic-3/vector_estimator.onnx",
+            totalBytes = 398_000_000L,
+            engine = "supertonic",
+            extraFiles = SUPERTONIC_FILES,
+        ),
     )
 
     fun modelsDir(ctx: Context): File {
@@ -87,7 +122,14 @@ object ModelManager {
     }
 
     fun isDownloaded(ctx: Context, m: CatalogModel): Boolean =
-        File(modelsDir(ctx), m.talkerFile).exists() && File(modelsDir(ctx), m.mmprojFile).exists()
+        if (m.extraFiles.isNotEmpty())
+            m.extraFiles.all { (_, n) -> File(supertonicDir(ctx), n).exists() }
+        else File(modelsDir(ctx), m.talkerFile).exists() && File(modelsDir(ctx), m.mmprojFile).exists()
+
+    /** Style voices that came with the Supertonic download. */
+    fun supertonicStyles(ctx: Context): List<File> =
+        File(supertonicDir(ctx), "styles").listFiles { f -> f.extension == "json" }
+            ?.sortedBy { it.name } ?: emptyList()
 
     fun selectedModel(ctx: Context): CatalogModel? {
         val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
@@ -121,6 +163,20 @@ object ModelManager {
     fun download(ctx: Context, m: CatalogModel, listener: DownloadListener) {
         downloadCanceled = false
         try {
+            if (m.extraFiles.isNotEmpty()) {
+                // multi-file model (Supertonic): graphs into their own dir,
+                // then the published voice styles
+                val dir = if (m.engine == "supertonic") "supertonic-3" else ""
+                for ((url, name) in m.extraFiles) downloadOne(ctx, url, "$dir/$name", listener)
+                if (m.engine == "supertonic") {
+                    for (s in SUPERTONIC_STYLES) {
+                        listener.onProgress("voice style $s", 0, 0)
+                        runCatching { downloadOne(ctx, styleUrl(s), "$dir/styles/$s.json", listener) }
+                    }
+                }
+                listener.onDone()
+                return
+            }
             if (m.quantizeFrom != null) {
                 val src = File(modelsDir(ctx), m.quantizeFrom)
                 if (!src.exists()) {
@@ -153,6 +209,7 @@ object ModelManager {
 
     private fun downloadOne(ctx: Context, url: String, fileName: String, listener: DownloadListener) {
         val dest = File(modelsDir(ctx), fileName)
+        dest.parentFile?.mkdirs()
         if (dest.exists()) return
         val part = File(modelsDir(ctx), "$fileName.part")
         var attempt = 0
