@@ -79,6 +79,35 @@ emoji and `[17]`-style citations are stripped before speaking.
 
 ## Models
 
+### Cloning a voice for Supertonic
+
+Supertonic's published models contain no speaker encoder, so the app cannot
+clone into a Supertonic voice on-device. It can be done offline on a CUDA box
+with [Mimocro/supertonic-voice-cloning](https://github.com/Mimocro/supertonic-voice-cloning),
+which inverts the style tensors through the public ONNX weights, and
+`tooling/clone_voice.sh` drives it end to end:
+
+```sh
+tooling/clone_voice.sh reference.wav "exact transcript of the recording"
+# -> clone_out/reference.style.json  ->  Voices -> Import on the phone
+```
+
+The output is schema-identical to the published styles, so the phone plays it
+with no changes — verified at speaker cosine 0.816 on-device versus 0.814 on
+the desktop for the same style. Cloning stays a desktop step by nature: it
+backpropagates through the 257 MB flow model (~0.4 s/iteration on an RTX
+5070), which is thousands of times more work than the phone does to *use* the
+result, and quantisation does not change that — the constraint is compute and
+autograd, not model size.
+
+Two measurements shaped the script. The inversion loop's reported cosine is
+computed on the probe text it is fitting, so it cannot rank runs: an F3 start
+reporting 0.90 and an F1 start reporting 0.86 scored 0.81 and 0.73 on
+held-out sentences. And two runs from the *same* start landed 0.73 and 0.69.
+So the script runs several starts (one per GPU at a time — two on one 12 GB
+card OOM) and picks the winner with `tooling/eval_style.py`, which scores
+candidates on sentences none of them were optimised against.
+
 Two engines ship side by side. **Qwen3-TTS** (1.7B, llama.cpp) clones a voice
 from your own recording but runs at RTF 5–6 on a phone. **Supertonic 3** (99M,
 ONNX Runtime) runs *below* real time — 5.7 s of audio in 2.7 s on an S24 FE —

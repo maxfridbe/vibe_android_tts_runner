@@ -48,24 +48,66 @@ if "/root/.cache" in s:
     print("patched speaker_encoder.py for non-root use")
 PY
 
-# Warm start from the closest published style unless one was named: the
-# optimiser only moves deltas, so a nearer starting speaker is free progress.
-if [ -z "$INIT" ]; then
-  INIT=$STYLES/F1.json
-  echo "init style: $(basename "$INIT") (pass a third argument to choose another)"
-fi
-
 export TORCHINDUCTOR_CACHE_DIR=$WORK/.inductor TRITON_CACHE_DIR=$WORK/.triton NOCOMPILE=1
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 NAME=$(basename "${REF%.*}")
-ARGS=(--reference "$REF" --onnx-dir "$ASSETS" --init-voice "$INIT"
-      --output "$OUT/$NAME.json" --save-at "$ITERS" --batch-size 3 --device cuda)
-[ -n "$TEXT" ] && ARGS+=(--ref-text "$TEXT")
-
+PY=${PYTHON:-$WORK/venv/bin/python}
 cd "$REPO/src"
-"${PYTHON:-$WORK/venv/bin/python}" invert.py "${ARGS[@]}"
+
+run_one() {  # <init-json> <gpu> <tag>
+  local init=$1 gpu=$2 tag=$3
+  local args=(--reference "$REF" --onnx-dir "$ASSETS" --init-voice "$init"
+              --output "$OUT/$NAME-$tag.json" --save-at "$ITERS"
+              --batch-size 3 --device cuda --shutoff 0)
+  [ -n "$TEXT" ] && args+=(--ref-text "$TEXT")
+  CUDA_VISIBLE_DEVICES=$gpu "$PY" invert.py "${args[@]}" > "$OUT/$NAME-$tag.log" 2>&1
+}
+
+# Multi-start, because the starting voice and the run itself both matter more
+# than they look: measured on one 3 s reference, held-out speaker similarity
+# came out 0.81 from an F3 start and 0.69-0.73 from two F1 starts. The run's
+# own reported cosine cannot rank these — it is measured on the probe text
+# being fitted — so candidates are scored on held-out sentences below.
+GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader | tr '\n' ' ')
+if [ -n "$INIT" ]; then
+  STARTS=("$INIT")
+else
+  STARTS=("$STYLES/F1.json" "$STYLES/F3.json" "$STYLES/M1.json")
+fi
+
+# One run per GPU at a time: each needs ~6 GB, and two on a 12 GB card OOM
+# partway through ("Tried to allocate 2.00 MiB"), losing the whole run.
+NGPU=$(echo "$GPUS" | wc -w)
+i=0
+while [ $i -lt ${#STARTS[@]} ]; do
+  pids=()
+  for g in $GPUS; do
+    [ $i -lt ${#STARTS[@]} ] || break
+    init=${STARTS[$i]}
+    tag=$(basename "${init%.json}")
+    echo "start $tag on GPU $g"
+    run_one "$init" "$g" "$tag" &
+    pids+=($!)
+    i=$((i + 1))
+  done
+  for p in "${pids[@]}"; do wait "$p"; done
+done
+
+CANDIDATES=()
+for init in "${STARTS[@]}"; do
+  tag=$(basename "${init%.json}")
+  [ -f "$OUT/$NAME-$tag.$ITERS.json" ] && CANDIDATES+=("$OUT/$NAME-$tag.$ITERS.json")
+done
+[ ${#CANDIDATES[@]} -gt 0 ] || { echo "no candidates produced; see $OUT/*.log"; exit 1; }
 
 echo
-echo "style written: $OUT/$NAME.$ITERS.json"
+echo "scoring candidates on held-out sentences ..."
+SELF=$(cd "$(dirname "$0")" && pwd)
+"$PY" "$SELF/eval_style.py" "$REF" "${CANDIDATES[@]}" | tee "$OUT/$NAME.eval.txt"
+
+BEST=$(tail -1 "$OUT/$NAME.eval.txt" | sed 's/^best: //')
+cp "$BEST" "$OUT/$NAME.style.json"
+echo
+echo "style written: $OUT/$NAME.style.json  (from $(basename "$BEST"))"
 echo "copy it to the phone and import it in Voices -> Import (pick the .json)."
