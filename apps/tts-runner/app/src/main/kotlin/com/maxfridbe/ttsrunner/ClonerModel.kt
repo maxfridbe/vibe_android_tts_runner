@@ -5,15 +5,15 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** Download for the on-device cloning encoder.
+/** Download for the on-device cloning models.
  *
- *  It is 89 MB of ONNX for a feature that currently scores 0.22 held-out
- *  speaker similarity against 0.82 for the desktop cloner, so it does not
- *  belong in everyone's APK. It lives in the repository instead and lands in
+ *  ~150 MB of ONNX for a feature still short of the desktop cloner (0.42-0.49
+ *  held-out speaker similarity against 0.82), so it does not belong in
+ *  everyone's APK. It lives in the repository instead and lands in
  *  filesDir/cloner on request — the same folder a side-loaded copy uses.
  *
- *  The numbers are quoted in the UI on purpose. Someone downloading 89 MB
- *  deserves to know what it will sound like before they wait for it. */
+ *  Two analyzer variants ship together: Qwen3-TTS's own speaker encoder (the
+ *  one listening preferred) and the classic ECAPA pair. */
 object ClonerModel {
 
     /** Raw file URLs, so this needs no API token and no release plumbing. */
@@ -21,13 +21,16 @@ object ClonerModel {
         "https://raw.githubusercontent.com/maxfridbe/vibe_android_tts_runner/main/models/cloner/"
 
     private val FILES = listOf(
+        VoiceCloner.QSPK_ASSET to 48_703_976L,
+        VoiceCloner.QSTYLE_ASSET to 9_484_898L,
         VoiceCloner.SPK_ASSET to 84_084_349L,
-        VoiceCloner.STYLE_ASSET to 4_959_295L,
+        VoiceCloner.STYLE_ASSET to 8_404_363L,
     )
 
     val totalBytes: Long get() = FILES.sumOf { it.second }
 
-    fun installed(ctx: Context) = FILES.all { (n, _) -> File(VoiceCloner.dir(ctx), n).length() > 0 }
+    /** Exact sizes, so a retrained model of the same name re-downloads. */
+    fun installed(ctx: Context) = FILES.all { (n, s) -> File(VoiceCloner.dir(ctx), n).length() == s }
 
     fun remove(ctx: Context) = FILES.forEach { (n, _) -> File(VoiceCloner.dir(ctx), n).delete() }
 
@@ -42,7 +45,8 @@ object ClonerModel {
         var done = 0L
         for ((name, size) in FILES) {
             val dest = File(dir, name)
-            if (dest.length() > 0) { done += size; progress(done, totalBytes); continue }
+            if (dest.length() == size) { done += size; progress(done, totalBytes); continue }
+            dest.delete()   // stale build of the same name
             val part = File(dir, "$name.part")
             try {
                 val conn = URL(BASE + name).openConnection() as HttpURLConnection

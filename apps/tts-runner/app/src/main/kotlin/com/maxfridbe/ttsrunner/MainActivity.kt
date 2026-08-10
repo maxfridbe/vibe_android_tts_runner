@@ -966,15 +966,32 @@ class MainActivity : AppCompatActivity() {
     /** The rest of a speaker's actions. They live behind one button because a
      *  phone-width row cannot hold five icons and still show a name. */
     private fun speakerMenu(anchor: View, v: VoiceStore.Voice) {
+        val isStyle = v.file.extension.equals("json", true)
         android.widget.PopupMenu(this, anchor).apply {
             menu.add("Share as a file")
             menu.add("Share preview audio")
+            // each engine can borrow the other's voices: a style's preview
+            // audio becomes a Qwen reference, a recording gets a style
+            // predicted from it
+            if (isStyle) menu.add("Copy to Qwen (preview becomes reference)")
+            else if (VoiceCloner.available(this@MainActivity)) menu.add("Clone to a Supertonic voice…")
             menu.add("Save to folder…")
             menu.add("Edit…")
             menu.add("Delete")
             setOnMenuItemClickListener {
                 when (it.title) {
                     "Share as a file" -> shareSpeaker(v)
+                    "Clone to a Supertonic voice…" -> cloneToSupertonic(v)
+                    "Copy to Qwen (preview becomes reference)" -> {
+                        val p = VoiceStore.previewFile(this@MainActivity, v.name, currentModelId())
+                        if (!p.exists()) {
+                            toast("Generate a preview first (▶) — that audio becomes the reference")
+                        } else {
+                            val nv = VoiceStore.importRecording(this@MainActivity, p, "${v.name} (ref)")
+                            rebuildVoices()
+                            toast("Qwen speaker created: ${nv.name}")
+                        }
+                    }
                     // the file is what another phone imports; the preview is
                     // what you send someone to let them hear the voice
                     "Share preview audio" -> {
@@ -1028,10 +1045,30 @@ class MainActivity : AppCompatActivity() {
      *  Experimental: the desktop cloner is still the quality reference, and the
      *  dialog says so rather than pretending otherwise. */
     private fun cloneToSupertonic(v: VoiceStore.Voice) {
+        val variants = VoiceCloner.variants(this)
+        if (variants.size > 1) {
+            // both analyzers installed: the choice is the user's, qwen first
+            // because listening preferred it even though ECAPA measures higher
+            val labels = variants.map {
+                if (it == VoiceCloner.VARIANT_QWEN)
+                    "Qwen voice analyzer — usually sounds closer"
+                else "ECAPA analyzer — scores higher on similarity"
+            }.toTypedArray()
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Clone “${v.name}” with…")
+                .setItems(labels) { _, i -> runDeviceClone(v, variants[i]) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            runDeviceClone(v, variants.firstOrNull() ?: return)
+        }
+    }
+
+    private fun runDeviceClone(v: VoiceStore.Voice, variant: String) {
         toast("Cloning “${v.name}” on device…")
         thread {
             val cloner = VoiceCloner(this)
-            val out = cloner.cloneToStyle(v.file, "${v.name} (device clone)")
+            val out = cloner.cloneToStyle(v.file, "${v.name} ($variant clone)", variant)
             cloner.close()
             runOnUiThread {
                 if (out == null) {
@@ -1040,10 +1077,12 @@ class MainActivity : AppCompatActivity() {
                     rebuildVoices()
                     MaterialAlertDialogBuilder(this)
                         .setTitle("Cloned: ${out.name}")
-                        .setMessage("Predicted a Supertonic style from ${v.name}. " +
-                            "Switch the model to Supertonic 3 and pick this voice to hear it.\n\n" +
+                        .setMessage("Predicted a Supertonic style from ${v.name} with the " +
+                            "$variant analyzer. Switch the model to Supertonic 3 and pick " +
+                            "this voice to hear it.\n\n" +
                             "This is the experimental on-device encoder — the desktop " +
-                            "cloning tool still produces closer voices.")
+                            "cloning tool still produces closer voices. If it sounds off, " +
+                            "try the other analyzer from the same button.")
                         .setPositiveButton("OK", null)
                         .show()
                 }
@@ -1975,12 +2014,15 @@ class MainActivity : AppCompatActivity() {
             fun paint() {
                 val have = ClonerModel.installed(this@MainActivity)
                 state.text = if (have)
-                    "Installed. Clone a recording into a Supertonic speaker from the Speakers tab."
-                else "89 MB. Predicts a speaker style from a recording in a second, on the phone.\n" +
-                    "Experimental: it scores about 0.22 speaker similarity against 0.82 for the " +
-                    "desktop cloning tool, so expect a voice in the right family rather than the " +
-                    "person themselves."
-                btn.text = if (have) "Remove" else "Download encoder"
+                    "Installed. Clone a recording into a Supertonic speaker from the Speakers " +
+                    "tab — two analyzers to choose from, the Qwen one usually sounds closer."
+                else "${ClonerModel.totalBytes / 1_000_000} MB. Predicts a speaker style from a " +
+                    "recording in seconds, on the phone, with a choice of two analyzers " +
+                    "(Qwen3-TTS's speaker encoder, or ECAPA).\n" +
+                    "Experimental: it scores 0.42–0.49 speaker similarity against 0.82 for " +
+                    "the desktop cloning tool — a recognisable take on the voice rather than " +
+                    "the person themselves."
+                btn.text = if (have) "Remove" else "Download models"
             }
             btn = Button(context).apply {
                 setOnClickListener {

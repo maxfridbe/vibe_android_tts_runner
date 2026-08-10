@@ -162,9 +162,11 @@ def main():
     ap.add_argument("--skip", type=int, default=0,
                     help="skip the first N shuffled speakers; a second worker on the "
                          "other GPU takes a disjoint slice with the same --seed")
-    ap.add_argument("--layout", choices=["librispeech", "vctk"], default="librispeech",
+    ap.add_argument("--layout", choices=["librispeech", "vctk", "flat"], default="librispeech",
                     help="vctk: speakers under wav48_silence_trimmed/, transcripts "
-                         "under txt/, short clips concatenated to reach the window")
+                         "under txt/, short clips concatenated to reach the window; "
+                         "flat: <name>.wav next to <name>.txt, one voice per pair "
+                         "(rolled pack candidates)")
     ap.add_argument("--min-dur", type=float, default=8.0)
     ap.add_argument("--max-dur", type=float, default=13.0)
     ap.add_argument("--min-cos", type=float, default=0.45,
@@ -183,8 +185,12 @@ def main():
 
     sroot = (os.path.join(args.corpus, "wav48_silence_trimmed")
              if args.layout == "vctk" else args.corpus)
-    spks = [s for s in sorted(os.listdir(sroot))
-            if os.path.isdir(os.path.join(sroot, s))]
+    if args.layout == "flat":
+        spks = [f[:-4] for f in sorted(os.listdir(sroot)) if f.endswith(".wav")
+                and os.path.exists(os.path.join(sroot, f[:-4] + ".txt"))]
+    else:
+        spks = [s for s in sorted(os.listdir(sroot))
+                if os.path.isdir(os.path.join(sroot, s))]
     rng = np.random.default_rng(args.seed)
     rng.shuffle(spks)
     spks = spks[args.skip:args.skip + args.max_speakers]
@@ -202,7 +208,21 @@ def main():
             done += 1; kept += 1
             continue
         ref = os.path.join(refs_dir, f"{spk}.wav")
-        if args.layout == "vctk":
+        if args.layout == "flat":
+            src = os.path.join(sroot, spk + ".wav")
+            try:
+                info = sf.info(src)
+            except Exception:
+                say(f"{spk}: unreadable wav, skipped")
+                continue
+            if not (args.min_dur <= info.frames / info.samplerate <= args.max_dur + 1):
+                say(f"{spk}: {info.frames / info.samplerate:.1f}s outside the window, skipped")
+                continue
+            text = open(os.path.join(sroot, spk + ".txt")).read().strip()
+            if not os.path.exists(ref):
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src,
+                                "-ar", "24000", "-ac", "1", ref], check=True)
+        elif args.layout == "vctk":
             files, text = pick_reference_vctk(args.corpus, spk,
                                               args.min_dur, args.max_dur)
             if not files:

@@ -60,6 +60,19 @@ object VoiceStore {
         return Voice(dest.nameWithoutExtension, dest)
     }
 
+    /** Copies a wav into the library as a reference recording — how a
+     *  Supertonic style crosses over to the Qwen engine: its preview audio
+     *  becomes the reference Qwen clones from. */
+    fun importRecording(ctx: Context, src: File, name: String): Voice {
+        val safe = name.replace(Regex("[^A-Za-z0-9 ._-]"), "_").trim().ifBlank { "voice" }
+        val ext = src.extension.lowercase().ifBlank { "wav" }
+        var dest = File(dir(ctx), "$safe.$ext")
+        var i = 2
+        while (dest.exists()) { dest = File(dir(ctx), "$safe ($i).$ext"); i++ }
+        src.copyTo(dest)
+        return Voice(dest.nameWithoutExtension, dest)
+    }
+
     fun import(ctx: Context, uri: Uri, displayName: String): Voice {
         val safe = displayName.replace(Regex("[^A-Za-z0-9 ._-]"), "_").ifBlank { "voice" }
         val ext = safe.substringAfterLast('.', "").lowercase().ifBlank { "wav" }

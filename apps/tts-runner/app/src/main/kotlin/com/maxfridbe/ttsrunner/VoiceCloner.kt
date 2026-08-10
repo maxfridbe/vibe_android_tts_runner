@@ -27,31 +27,41 @@ class VoiceCloner(private val ctx: Context) {
     private var env: OrtEnvironment? = null
     private var spk: OrtSession? = null
     private var style: OrtSession? = null
+    private var loadedVariant: String? = null
 
     companion object {
         const val SPK_ASSET = "spk_encoder.onnx"
         const val STYLE_ASSET = "style_encoder.onnx"
-        private const val RATE = 16000
+        const val QSPK_ASSET = "qwen_spk_encoder.onnx"
+        const val QSTYLE_ASSET = "style_encoder_qwen.onnx"
 
-        /** Side-loaded encoder, which is how it ships while it is still being
-         *  trained: 89 MB of ONNX does not belong in the APK until the thing
-         *  is good enough to keep. Push the pair into this folder and the
-         *  feature appears.
-         *
-         *      adb push spk_encoder.onnx /data/local/tmp/
-         *      adb shell run-as com.maxfridbe.ttsrunner \
-         *          cp /data/local/tmp/spk_encoder.onnx files/cloner/ */
+        /** Two analyzers, same contract, different ears. ECAPA is a speaker-
+         *  verification embedding (192 numbers of pure identity); the qwen
+         *  variant runs Qwen3-TTS's own speaker encoder (2048 numbers trained
+         *  for generation) — measured slightly lower on cosine but preferred
+         *  in listening, so it goes first. */
+        const val VARIANT_QWEN = "qwen"
+        const val VARIANT_ECAPA = "ecapa"
+        private const val RATE = 16000        // ECAPA eats 16 kHz
+        private const val QRATE = 24000       // qwen's mel front-end is 24 kHz
+
+        /** Side-loaded models: filesDir/cloner, filled by the Settings
+         *  download or adb. Their absence just hides the feature. */
         fun dir(ctx: Context): java.io.File = java.io.File(ctx.filesDir, "cloner").apply { mkdirs() }
 
-        private fun sideloaded(ctx: Context) =
-            java.io.File(dir(ctx), SPK_ASSET).exists() && java.io.File(dir(ctx), STYLE_ASSET).exists()
+        private fun has(ctx: Context, name: String) =
+            java.io.File(dir(ctx), name).length() > 0 || try {
+                ctx.assets.list("")?.contains(name) == true
+            } catch (_: Exception) { false }
 
-        private fun embedded(ctx: Context) = try {
-            ctx.assets.list("")?.toSet()?.containsAll(listOf(SPK_ASSET, STYLE_ASSET)) == true
-        } catch (_: Exception) { false }
+        /** Analyzer variants this phone can run, preferred first. */
+        fun variants(ctx: Context): List<String> = buildList {
+            if (has(ctx, QSPK_ASSET) && has(ctx, QSTYLE_ASSET)) add(VARIANT_QWEN)
+            if (has(ctx, SPK_ASSET) && has(ctx, STYLE_ASSET)) add(VARIANT_ECAPA)
+        }
 
         /** Whether this phone has a trained encoder at all, from either place. */
-        fun available(ctx: Context): Boolean = sideloaded(ctx) || embedded(ctx)
+        fun available(ctx: Context): Boolean = variants(ctx).isNotEmpty()
     }
 
     private fun bytes(name: String): ByteArray {
@@ -59,19 +69,23 @@ class VoiceCloner(private val ctx: Context) {
         return if (f.exists()) f.readBytes() else ctx.assets.open(name).use { it.readBytes() }
     }
 
-    private fun load(): Boolean {
-        if (style != null) return true
+    private fun load(variant: String): Boolean {
+        if (style != null && loadedVariant == variant) return true
+        close()
         return try {
             val e = OrtEnvironment.getEnvironment()
             env = e
             val opts = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
             }
-            spk = e.createSession(bytes(SPK_ASSET), opts)
-            style = e.createSession(bytes(STYLE_ASSET), opts)
+            val (spkName, styleName) = if (variant == VARIANT_QWEN)
+                QSPK_ASSET to QSTYLE_ASSET else SPK_ASSET to STYLE_ASSET
+            spk = e.createSession(bytes(spkName), opts)
+            style = e.createSession(bytes(styleName), opts)
+            loadedVariant = variant
             true
         } catch (t: Throwable) {
-            DebugLog.log(ctx, "VoiceCloner", "load failed", t as? Exception ?: Exception(t))
+            DebugLog.log(ctx, "VoiceCloner", "load($variant) failed", t as? Exception ?: Exception(t))
             close()
             false
         }
@@ -79,21 +93,23 @@ class VoiceCloner(private val ctx: Context) {
 
     fun close() {
         runCatching { spk?.close(); style?.close() }
-        spk = null; style = null
+        spk = null; style = null; loadedVariant = null
     }
 
     /** Reads [wav], predicts a style, and writes it to the voice library.
      *  Returns the new voice, or null with the reason logged. */
-    fun cloneToStyle(wav: File, name: String): VoiceStore.Voice? {
-        if (!load()) return null
+    fun cloneToStyle(wav: File, name: String,
+                     variant: String = variants(ctx).firstOrNull() ?: VARIANT_ECAPA): VoiceStore.Voice? {
+        if (!load(variant)) return null
         val e = env ?: return null
+        val rate = if (variant == VARIANT_QWEN) QRATE else RATE
         return try {
-            val audio = readWav16k(wav) ?: run {
+            val audio = readWav(wav, rate) ?: run {
                 DebugLog.log(ctx, "VoiceCloner", "unreadable wav: ${wav.name}"); return null
             }
-            // 16 kHz mono, capped: the encoder's identity estimate saturates
-            // after a few seconds and long clips only cost time
-            val n = minOf(audio.size, RATE * 12)
+            // mono at the analyzer's rate, capped: the identity estimate
+            // saturates after a few seconds and long clips only cost time
+            val n = minOf(audio.size, rate * 12)
             val t0 = System.currentTimeMillis()
             val wavT = OnnxTensor.createTensor(e, FloatBuffer.wrap(audio, 0, n),
                 longArrayOf(1, n.toLong()))
@@ -108,8 +124,8 @@ class VoiceCloner(private val ctx: Context) {
             val dp = flatten(styleOut[1].value)
             styleOut.close(); embT.close()
             DebugLog.log(ctx, "VoiceCloner",
-                "cloned ${wav.name} in ${System.currentTimeMillis() - t0} ms " +
-                "(${n / RATE}s audio, ttl ${ttl.size}, dp ${dp.size})")
+                "cloned ${wav.name} ($variant) in ${System.currentTimeMillis() - t0} ms " +
+                "(${n / rate}s audio, ttl ${ttl.size}, dp ${dp.size})")
 
             val json = JSONObject()
                 .put("style_ttl", JSONObject()
@@ -119,7 +135,7 @@ class VoiceCloner(private val ctx: Context) {
                     .put("dims", JSONArray(listOf(1, 8, 16)))
                     .put("data", JSONArray(dp.map { it.toDouble() })))
                 .put("metadata", JSONObject()
-                    .put("source", "on-device encoder (experimental)")
+                    .put("source", "on-device encoder ($variant analyzer)")
                     .put("reference", wav.name))
             val tmp = File(ctx.cacheDir, "cloned.json").apply { writeText(json.toString()) }
             VoiceStore.importStyle(ctx, tmp, name)
@@ -145,9 +161,9 @@ class VoiceCloner(private val ctx: Context) {
         else -> FloatArray(0)
     }
 
-    /** Minimal 16-bit PCM WAV reader with linear resampling to 16 kHz mono —
-     *  the app's own recordings and imports are all this format. */
-    private fun readWav16k(f: File): FloatArray? {
+    /** Minimal 16-bit PCM WAV reader with linear resampling to the target
+     *  rate, mono — the app's own recordings and imports are all this format. */
+    private fun readWav(f: File, targetRate: Int): FloatArray? {
         val b = f.readBytes()
         if (b.size < 44 || String(b, 0, 4) != "RIFF") return null
         val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
@@ -178,8 +194,8 @@ class VoiceCloner(private val ctx: Context) {
             }
             mono[i] = acc / channels
         }
-        if (rate == RATE) return mono
-        val outN = (frames.toLong() * RATE / rate).toInt()
+        if (rate == targetRate) return mono
+        val outN = (frames.toLong() * targetRate / rate).toInt()
         if (outN <= 1) return null
         val out = FloatArray(outN)
         for (i in 0 until outN) {
