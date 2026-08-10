@@ -9,7 +9,7 @@ model itself learned, and the only way to find them is to ask it.
 ## How they were found
 
 Synthesise a carrier sentence with the candidate in it and transcribe the
-result (SenseVoice, running on brainiac):
+result (SenseVoice, running on the GPU host):
 
     "I see. <x> Well then."   →   is "x" spoken as a word, or consumed?
 

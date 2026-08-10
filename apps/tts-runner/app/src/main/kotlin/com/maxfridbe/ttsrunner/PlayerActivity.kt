@@ -92,7 +92,7 @@ class PlayerActivity : AppCompatActivity() {
         col.addView(TextView(this).apply {
             val words = text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
             this.text = listOfNotNull(
-                voice.takeIf { it.isNotBlank() }?.let { "${VoiceStore.icon(this@PlayerActivity, it)} $it" },
+                voice.takeIf { it.isNotBlank() }?.let { VoiceStore.label(this@PlayerActivity, it) },
                 "$words words · ~${words / 150} min",
             ).joinToString(" · ")
             textSize = 13f; alpha = 0.7f

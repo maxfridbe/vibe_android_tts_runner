@@ -31,12 +31,25 @@ class HttpServer(private val ctx: Context, val port: Int) {
     private val pool = Executors.newFixedThreadPool(8)
     @Volatile var requests = 0; private set
     @Volatile var lastError: String? = null
+    /** Last line of activity, for the notification: what was asked and how it
+     *  went. A server you cannot see working is a server you do not trust. */
+    @Volatile var lastActivity: String? = null
+    @Volatile var speaking = 0
+    var onActivity: (() -> Unit)? = null
+
+    private fun activity(line: String) {
+        lastActivity = line
+        onActivity?.invoke()
+    }
 
     val running: Boolean get() = socket != null
 
     fun start() {
         val s = ServerSocket()
         s.reuseAddress = true
+        // wildcard bind: every interface, which is what makes the phone
+        // reachable over Wi-Fi and over a Tailscale address alike. On Android
+        // the socket is dual-stack, so this covers the IPv6 side too.
         s.bind(InetSocketAddress(port))
         socket = s
         Thread({
@@ -105,6 +118,7 @@ class HttpServer(private val ctx: Context, val port: Int) {
     private fun handle(client: Socket) {
         val req = readRequest(client.getInputStream()) ?: return
         requests++
+        val from = (client.inetAddress?.hostAddress ?: "?").removePrefix("::ffff:")
         val out = BufferedOutputStream(client.getOutputStream())
         val path = req.path.substringBefore('?')
         val host = req.headers["host"] ?: "localhost:$port"
@@ -144,20 +158,24 @@ class HttpServer(private val ctx: Context, val port: Int) {
                 val voices = if (supertonic) VoiceStore.styleList(ctx) else VoiceStore.list(ctx)
                 voices.forEach {
                     data.put(JSONObject().put("id", it.name).put("name", it.name)
-                        .put("kind", if (supertonic) "style" else "reference"))
+                        .put("kind", if (supertonic) "style" else "reference")
+                        // the browser client names speakers the way the app
+                        // does: their emoji, and how fast they answer
+                        .put("icon", VoiceStore.icon(ctx, it.name))
+                        .put("fast", supertonic))
                 }
                 respond(out, 200, "application/json",
                     JSONObject().put("object", "list").put("data", data).toString().toByteArray())
             }
 
-            path == "/v1/audio/speech" && req.method == "POST" -> speech(out, req)
+            path == "/v1/audio/speech" && req.method == "POST" -> speech(out, req, from)
 
             else -> respond(out, 404, "application/json",
                 JSONObject().put("error", "no route for $path").toString().toByteArray())
         }
     }
 
-    private fun speech(out: BufferedOutputStream, req: Request) {
+    private fun speech(out: BufferedOutputStream, req: Request, from: String) {
         val body = runCatching { JSONObject(req.body.decodeToString()) }.getOrNull()
             ?: return error(out, 400, "body must be JSON")
         val text = body.optString("input").trim()
@@ -179,9 +197,18 @@ class HttpServer(private val ctx: Context, val port: Int) {
             return error(out, 400, "$format is not encodable on Android; use wav, pcm, aac or mp3")
         }
 
-        val result = SynthBridge.synth(ctx, text, voice)
-        val wav = result.wav ?: return error(out, 502, result.error ?: "generation failed")
+        activity("$from · speaking ${text.length} chars as $voice")
+        speaking++
+        onActivity?.invoke()
+        val started = System.currentTimeMillis()
+        val result = try { SynthBridge.synth(ctx, text, voice) } finally { speaking-- }
+        val secs = (System.currentTimeMillis() - started) / 1000.0
+        val wav = result.wav ?: run {
+            activity("$from · failed: ${result.error}")
+            return error(out, 502, result.error ?: "generation failed")
+        }
         val clip = Wav.read(wav) ?: return error(out, 502, "unreadable output")
+        activity("$from · ${"%.1f".format(clip.seconds)}s of $voice in ${"%.1f".format(secs)}s")
 
         when (format) {
             "wav" -> respond(out, 200, "audio/wav", wav.readBytes(),
@@ -237,13 +264,25 @@ class HttpServer(private val ctx: Context, val port: Int) {
         ctx.assets.open(name).use { it.readBytes() }
 
     companion object {
-        /** The address a laptop on the same network should use. */
-        fun lanAddress(): String? = try {
+        /** Every address this phone can be reached on, best first.
+         *
+         *  A Tailscale address (100.64/10, the CGNAT range it uses) is listed
+         *  ahead of the Wi-Fi one because it is the address that keeps working
+         *  when the phone leaves the house. */
+        fun addresses(): List<String> = try {
             java.net.NetworkInterface.getNetworkInterfaces().toList()
                 .filter { it.isUp && !it.isLoopback }
-                .flatMap { it.inetAddresses.toList() }
-                .firstOrNull { it is java.net.Inet4Address && !it.isLoopbackAddress }
-                ?.hostAddress
-        } catch (_: Exception) { null }
+                .flatMap { nif -> nif.inetAddresses.toList().map { nif.name to it } }
+                .filter { (_, a) -> a is java.net.Inet4Address && !a.isLoopbackAddress }
+                .mapNotNull { (name, a) -> a.hostAddress?.let { name to it } }
+                .sortedByDescending { (name, ip) ->
+                    if (ip.startsWith("100.") || name.startsWith("tun")) 1 else 0
+                }
+                .map { it.second }
+                .distinct()
+        } catch (_: Exception) { emptyList() }
+
+        /** The address a laptop on the same network should use. */
+        fun lanAddress(): String? = addresses().firstOrNull()
     }
 }

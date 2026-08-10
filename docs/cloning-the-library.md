@@ -1,7 +1,7 @@
 # Cloning a whole voice library
 
-`tooling/clone_library.py` walks the audiobook maker's voice library on
-brainiac and produces one Supertonic style per speaker. It exists because
+`tooling/clone_library.py` walks the audiobook maker's voice library on the
+GPU host and produces one Supertonic style per speaker. It exists because
 looping `clone_voice.sh` over fourteen voices would be wrong in three ways.
 
 **One output directory per voice.** `invert.py` caches the denoised reference

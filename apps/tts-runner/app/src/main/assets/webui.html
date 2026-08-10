@@ -89,15 +89,18 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const status = (msg, kind) => { $("status").textContent = msg; $("status").className = kind || ""; };
-let lastUrl = null, lastName = "speech.wav";
+let lastUrl = null, lastName = "speech.wav", voiceMeta = {};
 
 async function loadVoices() {
   try {
     const res = await fetch("/v1/audio/voices");
     const { data } = await res.json();
+    // the label carries the same two marks the app uses: the speaker's emoji
+    // and whether it answers in a second or in tens of them
     $("voice").innerHTML = data.length
-      ? data.map((v) => `<option>${v.name}</option>`).join("")
+      ? data.map((v) => `<option value="${v.name}">${v.fast ? "⚡" : "🐢"} ${v.icon || ""} ${v.name}</option>`).join("")
       : `<option value="">no speakers on the phone</option>`;
+    voiceMeta = Object.fromEntries(data.map((v) => [v.name, v]));
     if (!data.length) status("The phone has no speakers for its selected model.", "err");
   } catch (e) {
     status("Could not reach the phone: " + e.message, "err");
@@ -107,7 +110,9 @@ async function loadVoices() {
 function addClip(text, url, name, secs) {
   $("empty").hidden = true;
   const li = document.createElement("li");
-  li.innerHTML = `<div class="meta"><span>${$("voice").value || "voice"}</span><span>${secs}</span></div>
+  const v = voiceMeta[$("voice").value];
+  const who = v ? `${v.fast ? "⚡" : "🐢"} ${v.icon || ""} ${v.name}` : ($("voice").value || "voice");
+  li.innerHTML = `<div class="meta"><span>${who}</span><span>${secs}</span></div>
                   <p></p><audio controls src="${url}"></audio>
                   <div><a href="${url}" download="${name}">Download</a></div>`;
   li.querySelector("p").textContent = text;

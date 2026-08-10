@@ -41,8 +41,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var content: FrameLayout
     private lateinit var memMeter: TextView
     private lateinit var statusPane: View
-    private lateinit var swipeTrack: FrameLayout
-    private lateinit var swipeBar: View
     private var navSelect: ((Int) -> Unit)? = null
     private val tabs = mutableMapOf<Int, View>()
     private var currentTab = TAB_JOBS
@@ -208,38 +206,11 @@ class MainActivity : AppCompatActivity() {
             bottom.setOnItemSelectedListener { showTab(it.itemId); true }
             bottom.selectedItemId = currentTab
             navSelect = { id -> bottom.selectedItemId = id }
-            // Swipe indicator: one slot per tab, riding the top edge of the
-            // navigation bar so the line sits directly over the tab it points
-            // at. Bottom nav divides its width evenly, so slot = width / tabs.
-            swipeEnabled = true
-            swipeBar = View(this).apply {
-                setBackgroundColor(themeColor(com.google.android.material.R.attr.colorPrimary))
-                alpha = 0f
-            }
-            swipeTrack = FrameLayout(this).apply {
-                // the nav bar carries a Material elevation, so the indicator
-                // needs a higher one to draw over its top edge
-                elevation = dp(16).toFloat()
-                addView(swipeBar, FrameLayout.LayoutParams(0, dp(3)))
-                addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                    val slot = width / tabOrder.size
-                    if (slot > 0 && swipeBar.layoutParams.width != slot) {
-                        swipeBar.layoutParams = swipeBar.layoutParams.also { it.width = slot }
-                        swipeBar.translationX = slotIndex() * slot.toFloat()
-                    }
-                }
-            }
-            val navHolder = FrameLayout(this).apply {
-                addView(bottom, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-                addView(swipeTrack, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.TOP))
-            }
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(contentWithMeter, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                addView(navHolder, LinearLayout.LayoutParams(
+                addView(bottom, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         }
@@ -287,71 +258,6 @@ class MainActivity : AppCompatActivity() {
         content.removeAllViews()
         content.addView(v)
         v.noStateSave()
-        // keep the swipe indicator in sync with taps on the nav bar too
-        if (swipeEnabled && !dragging && swipeBar.width > 0) {
-            swipeBar.translationX = slotIndex() * swipeBar.width.toFloat()
-        }
-    }
-
-    // ---- tab swipe ---------------------------------------------------------
-
-    private var downX = 0f
-    private var downY = 0f
-    private var dragging = false
-    /** Only with the bottom navigation bar. On a tablet or an unfolded Fold the
-     *  tabs are a rail on the left, there is nothing for a horizontal indicator
-     *  to line up with, and wide layouts have side-by-side content that a
-     *  swipe-to-switch gesture would fight with. */
-    private var swipeEnabled = false
-
-    private fun slotIndex() = tabOrder.indexOf(currentTab).coerceAtLeast(0)
-
-    /** Every touch is observed here — children still handle their own gestures,
-     *  the content just rides along horizontally and the indicator shows which
-     *  tab a release would land on. */
-    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
-        if (!swipeEnabled) return super.dispatchTouchEvent(ev)
-        when (ev.actionMasked) {
-            android.view.MotionEvent.ACTION_DOWN -> {
-                downX = ev.x; downY = ev.y; dragging = false
-            }
-            android.view.MotionEvent.ACTION_MOVE -> {
-                val dx = ev.x - downX
-                val dy = ev.y - downY
-                if (!dragging && kotlin.math.abs(dx) > dp(24) &&
-                    kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
-                    dragging = true
-                    swipeBar.animate().alpha(1f).setStartDelay(0).setDuration(90).start()
-                }
-                if (dragging) dragSwipe(dx)
-            }
-            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
-                if (dragging) { dragging = false; releaseSwipe(ev.x - downX) }
-        }
-        return super.dispatchTouchEvent(ev)
-    }
-
-    private fun dragSwipe(dx: Float) {
-        val slot = swipeBar.width.toFloat()
-        if (slot <= 0f) return
-        val idx = slotIndex()
-        // the indicator leads toward the incoming tab, so it moves opposite the
-        // finger — the same convention as a pager underline
-        var travel = (-dx * 0.5f).coerceIn(-slot, slot)
-        if (idx == 0 && travel < 0f) travel = 0f
-        if (idx == tabOrder.lastIndex && travel > 0f) travel = 0f
-        swipeBar.translationX = idx * slot + travel
-        content.translationX = if (travel == 0f) 0f else (dx * 0.12f).coerceIn(-slot, slot)
-    }
-
-    private fun releaseSwipe(dx: Float) {
-        val slot = swipeBar.width.toFloat()
-        content.animate().translationX(0f).setDuration(150).start()
-        val next = slotIndex() + if (dx < 0) 1 else -1
-        if (kotlin.math.abs(dx) > dp(72) && next in tabOrder.indices) selectTab(tabOrder[next])
-        swipeBar.animate().translationX(slotIndex() * slot).setDuration(180)
-            .withEndAction { swipeBar.animate().alpha(0f).setStartDelay(140).setDuration(220).start() }
-            .start()
     }
 
     /** Switch tab and move the navigation highlight with it. */
@@ -494,7 +400,7 @@ class MainActivity : AppCompatActivity() {
             voicePickBtn = Button(context).apply { setOnClickListener { pickVoiceDialog() } }
             addView(voicePickBtn, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            val modeGroup = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
+            val modeGroup = RadioGroup(context).apply { orientation = LinearLayout.VERTICAL }
             modeGroup.addView(RadioButton(context).apply { text = "Listen"; id = 1; isChecked = true })
             modeGroup.addView(RadioButton(context).apply { text = "Save file"; id = 2 })
             modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == 2 }
@@ -566,12 +472,12 @@ class MainActivity : AppCompatActivity() {
             ?: VoiceStore.defaultFor(this, supertonic)?.name
             ?: voicesForCurrentModel().firstOrNull()
         voicePickBtn.text =
-            if (name == null) "Voice: none ▾" else "${VoiceStore.icon(this, name)} $name ▾"
+            if (name == null) "Voice: none ▾" else "${VoiceStore.label(this, name)} ▾"
     }
 
-    /** "🦊 dale" labels for the picker dialogs, in list order. */
+    /** "⚡ 🦊 Dale" labels for the picker dialogs, in list order. */
     private fun voiceLabels(names: List<String>) =
-        names.map { "${VoiceStore.icon(this, it)}  $it" }.toTypedArray()
+        names.map { VoiceStore.label(this, it) }.toTypedArray()
 
     /** Voices the selected model can actually speak with: Supertonic uses
      *  style files, Qwen uses reference recordings. */
@@ -1168,8 +1074,19 @@ class MainActivity : AppCompatActivity() {
         col.addView(nameEdit)
 
         col.addView(TextView(this).apply {
-            text = "Icon"; textSize = 12f; alpha = 0.7f; setPadding(0, dp(14), 0, dp(4))
+            text = "Icon — pick one, or type your own"
+            textSize = 12f; alpha = 0.7f; setPadding(0, dp(14), 0, dp(4))
         })
+        // an emoji field beats any list I could ship: the keyboard already has
+        // every glyph, and someone's voice is theirs to label
+        val customIcon = EditText(this).apply {
+            hint = "any emoji"
+            setText(chosenIcon)
+            setSingleLine()
+            textSize = 20f
+            filters = arrayOf(android.text.InputFilter.LengthFilter(4))
+        }
+        col.addView(customIcon)
         val perRow = 8
         val cells = mutableListOf<TextView>()
         fun paintCells() = cells.forEach {
@@ -1186,7 +1103,11 @@ class MainActivity : AppCompatActivity() {
                         textSize = 22f
                         gravity = Gravity.CENTER
                         setPadding(0, dp(6), 0, dp(6))
-                        setOnClickListener { chosenIcon = emoji; paintCells() }
+                        setOnClickListener {
+                            chosenIcon = emoji
+                            customIcon.setText(emoji)
+                            paintCells()
+                        }
                     }
                     cells.add(cell)
                     addView(cell, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1214,6 +1135,9 @@ class MainActivity : AppCompatActivity() {
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_EXPORT_DIR)
             }
             .setPositiveButton("Save") { _, _ ->
+                // whatever is in the field wins: it holds the tapped choice
+                // unless the user typed over it
+                chosenIcon = customIcon.text.toString().trim().ifBlank { chosenIcon }
                 val t = transcriptEdit.text.toString().trim()
                 if (t.isBlank()) transcript.delete() else transcript.writeText(t)
                 val renamed = try {
@@ -1539,7 +1463,7 @@ class MainActivity : AppCompatActivity() {
                 addView(TextView(context).apply {
                     textSize = 12f; alpha = 0.7f
                     text = "$statusIcon ${j.status} · ${fmt.format(java.util.Date(j.id))} · " +
-                        "${j.text.length} chars · ${j.voice} · ${j.model}/${j.backend}$stats" +
+                        "${j.text.length} chars · ${VoiceStore.label(this@MainActivity, j.voice)} · ${j.model}/${j.backend}$stats" +
                         (if (j.output.isNotBlank()) "\n→ ${j.output}" else "") +
                         (if (j.error.isNotBlank()) "\n${j.error}" else "")
                 })
@@ -1678,24 +1602,58 @@ class MainActivity : AppCompatActivity() {
             "that uses it. Anything on your network can call it; nothing leaves the phone.")
 
         val port = prefs().getInt("host_port", HostingService.DEFAULT_PORT)
-        val lan = HttpServer.lanAddress()
+        val addresses = HttpServer.addresses()
+        val lan = addresses.firstOrNull()
         val base = "http://${lan ?: "127.0.0.1"}:$port"
+        val up = HostingService.running
 
         col.addView(card {
-            addView(TextView(context).apply {
-                text = if (HostingService.running) "Running" else "Stopped"
-                textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            val head = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            // a running server should be obvious from across the room
+            head.addView(TextView(context).apply {
+                text = if (up) "●" else "●"
+                textSize = 20f
+                setTextColor(if (up) 0xFF4CAF50.toInt() else 0xFF9E9E9E.toInt())
+                setPadding(0, 0, dp(8), 0)
             })
+            head.addView(TextView(context).apply {
+                text = if (up) "Running" else "Stopped"
+                textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+                setTextColor(if (up) 0xFF4CAF50.toInt() else themeColor(
+                    com.google.android.material.R.attr.colorOnSurface))
+            })
+            addView(head)
             addView(TextView(context).apply {
-                text = if (HostingService.running) base
+                text = if (up) base
                        else HostingService.lastBindError?.let { "Last attempt failed: $it" }
                            ?: "Start it to get an address"
                 textSize = 14f; alpha = 0.8f
                 setPadding(0, dp(2), 0, dp(8))
             })
+            if (up && addresses.size > 1) {
+                addView(TextView(context).apply {
+                    // a 100.x address is Tailscale's, and it is the one that
+                    // still works when the phone leaves the house
+                    text = "Also reachable on " + addresses.drop(1).joinToString(", ") { "$it:$port" }
+                    textSize = 12f; alpha = 0.7f
+                    setPadding(0, 0, 0, dp(6))
+                })
+            }
+            if (up) {
+                addView(TextView(context).apply {
+                    val s = HostingService.server
+                    text = "${s?.requests ?: 0} requests · " +
+                        (s?.lastActivity ?: "nothing asked yet")
+                    textSize = 12f; alpha = 0.7f
+                    setPadding(0, 0, 0, dp(6))
+                })
+            }
             if (lan == null) {
                 addView(TextView(context).apply {
-                    text = "No Wi-Fi address — on mobile data only the phone itself can reach it."
+                    text = "No network address — on mobile data without Tailscale, only the phone " +
+                        "itself can reach it."
                     textSize = 12f; alpha = 0.7f
                 })
             }
@@ -1717,7 +1675,7 @@ class MainActivity : AppCompatActivity() {
             addView(portRow)
 
             addView(Button(context).apply {
-                text = if (HostingService.running) "Stop server" else "Start server"
+                text = if (up) "Stop server" else "Start server"
                 setOnClickListener {
                     if (HostingService.running) {
                         HostingService.stop(this@MainActivity)
@@ -1908,6 +1866,58 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
             }
+        })
+
+        col.addView(card {
+            addView(TextView(context).apply {
+                text = "On-device voice cloning"
+                textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            })
+            val state = TextView(context).apply {
+                textSize = 13f; alpha = 0.75f
+                setPadding(0, dp(2), 0, dp(8))
+            }
+            val bar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                visibility = View.GONE
+            }
+            lateinit var btn: Button
+            fun paint() {
+                val have = ClonerModel.installed(this@MainActivity)
+                state.text = if (have)
+                    "Installed. Clone a recording into a Supertonic speaker from the Speakers tab."
+                else "89 MB. Predicts a speaker style from a recording in a second, on the phone.\n" +
+                    "Experimental: it scores about 0.22 speaker similarity against 0.82 for the " +
+                    "desktop cloning tool, so expect a voice in the right family rather than the " +
+                    "person themselves."
+                btn.text = if (have) "Remove" else "Download encoder"
+            }
+            btn = Button(context).apply {
+                setOnClickListener {
+                    if (ClonerModel.installed(this@MainActivity)) {
+                        ClonerModel.remove(this@MainActivity)
+                        paint(); rebuildVoices()
+                        return@setOnClickListener
+                    }
+                    isEnabled = false
+                    bar.visibility = View.VISIBLE
+                    thread {
+                        val err = ClonerModel.download(this@MainActivity) { d, t ->
+                            runOnUiThread { bar.progress = (d * 1000 / t.coerceAtLeast(1)).toInt() }
+                        }
+                        runOnUiThread {
+                            bar.visibility = View.GONE
+                            isEnabled = true
+                            if (err != null) toast("Download failed: $err")
+                            paint(); rebuildVoices()
+                        }
+                    }
+                }
+            }
+            addView(state)
+            addView(bar)
+            addView(btn)
+            paint()
         })
 
         col.addView(card {

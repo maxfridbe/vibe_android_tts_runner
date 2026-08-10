@@ -111,6 +111,13 @@ object VoiceStore {
         "🎙️", "🦊", "🐻", "🦉", "🐧", "🐙", "🦁", "🐉",
         "🤖", "👽", "🧙", "🧛", "🤠", "👑", "🎩", "🦄",
         "🐳", "🦖", "🐺", "🌚", "🎭", "📻", "🧜", "🕵️",
+        "🐸", "🐨", "🐯", "🦝", "🦡", "🦔", "🐿️", "🦅",
+        "🦜", "🦚", "🐢", "🐝", "🦋", "🐞", "🦂", "🦈",
+        "🧞", "🧝", "🧟", "🧚", "👻", "💀", "🤡", "👹",
+        "🎃", "🌞", "🌙", "⭐", "🔥", "🌊", "🍄", "🌵",
+        "☕", "🍷", "🎸", "🥁", "🎺", "🎻", "📚", "✒️",
+        "🚀", "🛸", "⚓", "🗿", "🧭", "⏳", "🔮", "🎲",
+        "😺", "🐣", "🦢", "🕊️", "🐬", "🦌", "🐊", "🦥",
     )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
@@ -123,6 +130,24 @@ object VoiceStore {
     fun setIcon(ctx: Context, name: String, icon: String) {
         prefs(ctx).edit().putString(iconKey(name), icon).apply()
     }
+
+    /** ⚡ answers in about a second, 🐢 takes tens of them. Shown next to a
+     *  speaker's name everywhere one appears, because it is the one property
+     *  that changes what you can do with it. */
+    const val FAST = "⚡"
+    const val SLOW = "🐢"
+
+    fun speed(styleVoice: Boolean) = if (styleVoice) FAST else SLOW
+
+    /** "⚡ 🦊 Dale" — the label every picker, list and card uses, so a speaker
+     *  looks the same wherever it is named. */
+    fun label(ctx: Context, name: String, styleVoice: Boolean): String =
+        "${speed(styleVoice)} ${icon(ctx, name)}  $name"
+
+    /** Whether a name refers to a style file (fast) rather than a recording. */
+    fun isStyle(ctx: Context, name: String): Boolean = styleFile(ctx, name) != null
+
+    fun label(ctx: Context, name: String): String = label(ctx, name, isStyle(ctx, name))
 
     private fun previewsDir(ctx: Context) = File(ctx.filesDir, "previews").apply { mkdirs() }
 

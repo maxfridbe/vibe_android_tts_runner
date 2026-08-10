@@ -34,7 +34,12 @@ class HostingService : Service() {
         val port = intent?.getIntExtra(EXTRA_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
         try {
             if (server?.running != true) {
-                server = HttpServer(this, port).apply { start() }
+                server = HttpServer(this, port).apply {
+                    // every request refreshes the notification, so the phone
+                    // shows what the network is asking it to say
+                    onActivity = { runCatching { update() } }
+                    start()
+                }
                 DebugLog.log(this, "HostingService", "listening on :$port")
             }
         } catch (t: Throwable) {
@@ -44,27 +49,40 @@ class HostingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        val url = "http://${HttpServer.lanAddress() ?: "127.0.0.1"}:$port"
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notification())
+        }
+        sendBroadcast(Intent(STATUS).setPackage(packageName))
+        return START_STICKY
+    }
+
+    private fun notification(): Notification {
+        val s = server
+        val url = "http://${HttpServer.lanAddress() ?: "127.0.0.1"}:${s?.port ?: DEFAULT_PORT}"
         val stop = PendingIntent.getService(this, 7,
             Intent(this, HostingService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE)
         val open = PendingIntent.getActivity(this, 8,
             Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val n = Notification.Builder(this, CHANNEL)
+        val busy = (s?.speaking ?: 0) > 0
+        val detail = s?.lastActivity ?: "no requests yet"
+        return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Speech API is up")
-            .setContentText(url)
+            .setContentTitle(if (busy) "Speech API — speaking" else "Speech API is up")
+            .setContentText("$url · ${s?.requests ?: 0} requests")
+            .setStyle(Notification.BigTextStyle().bigText("$url\n$detail"))
             .setContentIntent(open)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIF_ID, n)
-        }
+    }
+
+    private fun update() {
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification())
         sendBroadcast(Intent(STATUS).setPackage(packageName))
-        return START_STICKY
     }
 
     private fun stopServer() {

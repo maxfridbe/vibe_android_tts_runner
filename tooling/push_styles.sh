@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copy cloned Supertonic styles from brainiac onto a connected phone.
+# Copy cloned Supertonic styles from the GPU host onto a connected phone.
 #
 #   tooling/push_styles.sh                 # every style in the library run
 #   tooling/push_styles.sh Dale "Tony Jay" # a selection
@@ -14,7 +14,8 @@
 #                                   without touching the UI. Debug builds only.
 set -euo pipefail
 SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-HOST=${HOST:-brainiac-nvidia}
+# Override for your own machine:  HOST=gpu-box tooling/push_styles.sh
+HOST=${HOST:?set HOST to the ssh alias of the GPU host}
 REMOTE=${REMOTE:-supertonic-experiment/clone_out/library/styles}
 PKG=com.maxfridbe.ttsrunner
 STAGE=$(mktemp -d)

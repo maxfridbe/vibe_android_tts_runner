@@ -258,7 +258,7 @@ class TalkActivity : AppCompatActivity() {
             ?: names.first()
         // ⚡ answers in about a second, 🐢 takes tens of them — the one thing
         // worth knowing before choosing who speaks next
-        val labels = names.map { "${if (fast) "⚡" else "🐢"} ${VoiceStore.icon(this, it)}  $it" }
+        val labels = names.map { VoiceStore.label(this, it, fast) }
         voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         voiceSpinner.setSelection(names.indexOf(voice).coerceAtLeast(0))
         voiceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -460,8 +460,7 @@ class TalkActivity : AppCompatActivity() {
             h.card.setCardBackgroundColor(themeColor(
                 if (position % 2 == 0) com.google.android.material.R.attr.colorSecondaryContainer
                 else com.google.android.material.R.attr.colorTertiaryContainer))
-            h.who.text = "${if (line.fast) "⚡" else "🐢"} " +
-                "${VoiceStore.icon(this@TalkActivity, line.voice)}  ${line.voice}"
+            h.who.text = VoiceStore.label(this@TalkActivity, line.voice, line.fast)
             h.meta.text = when {
                 line.speaking -> "speaking…"
                 line.audio != null -> Wav.fmt(line.secs)

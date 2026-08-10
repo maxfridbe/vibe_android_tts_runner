@@ -182,7 +182,7 @@ class ShareActivity : AppCompatActivity() {
         val def = VoiceStore.defaultFor(this, supertonic)
         for ((i, v) in list.withIndex()) {
             voices.addView(RadioButton(this).apply {
-                text = "${VoiceStore.icon(this@ShareActivity, v.name)}  ${v.name}"
+                text = VoiceStore.label(this@ShareActivity, v.name, supertonic)
                 id = i
                 isChecked = v.name == def?.name
             })

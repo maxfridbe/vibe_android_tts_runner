@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Clone every speaker in the audiobook maker's library into Supertonic styles.
 
-The audiobook maker (on brainiac) keeps a voice library: reference audio plus
+The audiobook maker on the GPU host keeps a voice library: reference audio plus
 the exact transcript of that audio. That transcript is what makes a good
 inversion cheap — no whisper pass, and the mel/latent losses get a probe that
 really matches the recording. This walks that library and produces one
