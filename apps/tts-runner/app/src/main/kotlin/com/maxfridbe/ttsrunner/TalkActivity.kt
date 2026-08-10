@@ -53,9 +53,11 @@ class TalkActivity : AppCompatActivity() {
         var speaking = false
     }
 
+    private lateinit var chat: ChatStore.Chat
     private val lines = mutableListOf<Line>()
     private lateinit var list: androidx.recyclerview.widget.RecyclerView
     private lateinit var adapter: LineAdapter
+    private lateinit var titleView: TextView
     private lateinit var input: EditText
     private lateinit var status: TextView
     private lateinit var totals: TextView
@@ -73,7 +75,16 @@ class TalkActivity : AppCompatActivity() {
         return if (tv.resourceId != 0) getColor(tv.resourceId) else tv.data
     }
 
-    private fun clipDir() = File(filesDir, "talk").apply { mkdirs() }
+    private fun clipDir() = ChatStore.dir(this, chat.id)
+
+    /** Writes the conversation back after anything that changes it. Cheap —
+     *  one small JSON — and it means the chat list is never stale and a chat
+     *  survives the activity being torn down mid-sentence. */
+    private fun persist() {
+        chat.lines.clear()
+        lines.mapTo(chat.lines) { ChatStore.Line(it.text, it.voice, it.fast, it.audio, it.secs) }
+        ChatStore.save(this, chat)
+    }
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
@@ -89,6 +100,7 @@ class TalkActivity : AppCompatActivity() {
                     }
                     busy = null
                     status.text = "ready"
+                    persist()
                     render()
                     pump()
                 }
@@ -106,6 +118,12 @@ class TalkActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         DynamicColors.applyToActivityIfAvailable(this)
+        val id = intent.getStringExtra(EXTRA_CHAT_ID)
+        chat = (id?.let { ChatStore.load(this, it) })
+            ?: ChatStore.create(this, ChatStore.defaultName(this))
+        chat.lines.mapTo(lines) { Line(it.text, it.voice, it.fast).apply {
+            audio = it.audio; secs = it.secs
+        } }
 
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -114,10 +132,14 @@ class TalkActivity : AppCompatActivity() {
         val head = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
-        head.addView(TextView(this).apply {
-            text = "Talk"
+        titleView = TextView(this).apply {
+            text = chat.name
             textSize = 24f; setTypeface(typeface, Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setOnClickListener { renameDialog() }
+        }
+        head.addView(titleView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         head.addView(ImageButton(this).apply {
             setImageResource(R.drawable.ic_play)
             contentDescription = "Replay the whole conversation"
@@ -213,7 +235,6 @@ class TalkActivity : AppCompatActivity() {
                 "Talk needs Supertonic (Settings → Model) — the 1.7B model is far too slow for live speech",
                 Toast.LENGTH_LONG).show()
         }
-        clipDir().listFiles()?.forEach { it.delete() }   // a new chat starts clean
         setupVoices(intent.getStringExtra(EXTRA_VOICE))
         render()
     }
@@ -256,11 +277,6 @@ class TalkActivity : AppCompatActivity() {
         registerReceiver(statusReceiver, IntentFilter(TtsService.STATUS_BROADCAST), RECEIVER_NOT_EXPORTED)
     }
 
-    override fun onPause() {
-        super.onPause()
-        runCatching { unregisterReceiver(statusReceiver) }
-    }
-
     override fun onDestroy() {
         stopPlayback()
         super.onDestroy()
@@ -290,6 +306,7 @@ class TalkActivity : AppCompatActivity() {
         val v = voice ?: voicesForModel().firstOrNull() ?: return
         val line = Line(text, v, fast = supertonicSelected())
         lines.add(line)
+        persist()
         render()
         list.post { list.scrollToPosition(lines.size - 1) }
         queue.addLast(line)
@@ -353,6 +370,7 @@ class TalkActivity : AppCompatActivity() {
                 if (a !in lines.indices || b !in lines.indices) return false
                 lines.add(b, lines.removeAt(a))
                 adapter.notifyItemMoved(a, b)
+                persist()
                 return true
             }
 
@@ -575,7 +593,7 @@ class TalkActivity : AppCompatActivity() {
                     "Save text" -> saveTextToFile("line.txt", line.text)
                     "Share audio" -> shareAudio(listOfNotNull(line.audio), line.text.take(40))
                     "Save audio" -> saveAudio(listOfNotNull(line.audio), line.text.take(40))
-                    "Delete" -> { lines.removeAt(index); render() }
+                    "Delete" -> { lines.removeAt(index); persist(); render() }
                 }
                 true
             }
@@ -585,6 +603,8 @@ class TalkActivity : AppCompatActivity() {
 
     private fun conversationMenu(anchor: View) {
         PopupMenu(this, anchor).apply {
+            menu.add("Rename chat")
+            menu.add("Close chat")
             menu.add("Replay all")
             menu.add("Share as one track")
             menu.add("Save as one track")
@@ -596,6 +616,8 @@ class TalkActivity : AppCompatActivity() {
             setOnMenuItemClickListener {
                 val audio = lines.mapNotNull { l -> l.audio }
                 when (it.title) {
+                    "Rename chat" -> renameDialog()
+                    "Close chat" -> { persist(); finish() }
                     "Replay all" -> replayAll()
                     "Share as one track" -> shareAudio(audio, "Talk")
                     "Save as one track" -> saveAudio(audio, "Talk")
@@ -606,14 +628,37 @@ class TalkActivity : AppCompatActivity() {
                     "Clear" -> {
                         stopPlayback()
                         lines.clear(); queue.clear()
-                        clipDir().listFiles()?.forEach { f -> f.delete() }
-                        render()
+                        clipDir().listFiles()?.filter { f -> f.extension == "wav" }?.forEach { f -> f.delete() }
+                        persist(); render()
                     }
                 }
                 true
             }
             show()
         }
+    }
+
+    private fun renameDialog() {
+        val edit = EditText(this).apply {
+            setText(chat.name); setSingleLine()
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Chat name")
+            .setView(edit)
+            .setPositiveButton("Rename") { _, _ ->
+                chat.name = edit.text.toString().trim().ifBlank { chat.name }
+                titleView.text = chat.name
+                persist()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        runCatching { unregisterReceiver(statusReceiver) }
+        persist()
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
@@ -631,6 +676,7 @@ class TalkActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_VOICE = "voice"
+        const val EXTRA_CHAT_ID = "chat_id"
         private const val REQ_SAVE_TEXT = 21
 
         /** Supertonic 3's expression tags. The model card says ten exist but

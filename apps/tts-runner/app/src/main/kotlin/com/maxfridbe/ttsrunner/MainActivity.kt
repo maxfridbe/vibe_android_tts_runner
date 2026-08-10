@@ -45,8 +45,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var swipeBar: View
     private var navSelect: ((Int) -> Unit)? = null
     private val tabs = mutableMapOf<Int, View>()
-    private var currentTab = TAB_NEWJOB
-    private val tabOrder = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_HOST, TAB_SETTINGS)
+    private var currentTab = TAB_JOBS
+    private val tabOrder = listOf(TAB_JOBS, TAB_VOICES, TAB_CHATS, TAB_HOST, TAB_SETTINGS)
 
     // New job tab widgets (referenced from the status receiver)
     private lateinit var runStatus: TextView
@@ -152,7 +152,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         DynamicColors.applyToActivityIfAvailable(this)
-        currentTab = savedInstanceState?.getInt("tab") ?: TAB_NEWJOB
+        currentTab = savedInstanceState?.getInt("tab") ?: TAB_JOBS
 
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
@@ -183,9 +183,9 @@ class MainActivity : AppCompatActivity() {
 
         val wide = resources.configuration.screenWidthDp >= 600
         val navItems = { menu: Menu ->
-            menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(R.drawable.ic_add)
+            menu.add(0, TAB_JOBS, 0, "Jobs").setIcon(R.drawable.ic_jobs)
             menu.add(0, TAB_VOICES, 1, "Speakers").setIcon(R.drawable.ic_mic)
-            menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_jobs)
+            menu.add(0, TAB_CHATS, 2, "Chats").setIcon(R.drawable.ic_chat)
             menu.add(0, TAB_HOST, 3, "Hosting").setIcon(R.drawable.ic_host)
             menu.add(0, TAB_SETTINGS, 4, "Settings").setIcon(R.drawable.ic_settings)
         }
@@ -268,11 +268,11 @@ class MainActivity : AppCompatActivity() {
         currentTab = id
         // rebuilt each visit: Settings reads live permission state, Hosting
         // reads whether the server is up right now
-        if (id == TAB_SETTINGS || id == TAB_HOST) tabs.remove(id)
+        if (id == TAB_SETTINGS || id == TAB_HOST || id == TAB_CHATS) tabs.remove(id)
         val v = tabs.getOrPut(id) {
             when (id) {
-                TAB_NEWJOB -> buildNewJobTab()
                 TAB_VOICES -> buildVoicesTab()
+                TAB_CHATS -> buildChatsTab()
                 TAB_JOBS -> buildJobsTab()
                 TAB_HOST -> buildHostTab()
                 else -> buildSettingsTab()
@@ -282,8 +282,7 @@ class MainActivity : AppCompatActivity() {
             // opening the tab is the natural moment to reconcile with the
             // backup folder: new speakers go out, a fresh install pulls back in
             TAB_VOICES -> { rebuildVoices(); syncSpeakerFolder(loud = false) }
-            TAB_JOBS -> rebuildJobs()
-            TAB_NEWJOB -> refreshVoiceLabel()
+            TAB_JOBS -> { rebuildJobs(); refreshVoiceLabel() }
         }
         content.removeAllViews()
         content.addView(v)
@@ -404,6 +403,9 @@ class MainActivity : AppCompatActivity() {
         ui.post(memTicker)
         // a voice may have been recorded while we were paused (RecordActivity)
         if (currentTab == TAB_VOICES && tabs.containsKey(TAB_VOICES)) rebuildVoices()
+        // and a chat has almost certainly changed: coming back from Talk is the
+        // normal way to arrive here, so the list is re-read rather than cached
+        if (currentTab == TAB_CHATS) selectTab(TAB_CHATS)
     }
 
     override fun onPause() {
@@ -472,16 +474,13 @@ class MainActivity : AppCompatActivity() {
     private fun currentModelId() = ModelManager.selectedModel(this)?.id ?: "none"
     private fun prefs() = getSharedPreferences("ttsrunner", MODE_PRIVATE)
 
-    // ---- New job tab -------------------------------------------------------
+    // ---- New job ------------------------------------------------------------
 
-    private fun buildNewJobTab(): View {
-        val (scroll, col) = page()
-        col.title("New TTS job")
-        col.caption("Share a web page — or any selected text — to TTS Runner from another app's " +
-            "share sheet and it fetches the article, strips the navigation and reads it aloud. " +
-            "You get the extracted text to check and edit before a word is spoken.")
-
-        col.addView(card {
+    /** Composing a job lives at the top of the Jobs tab: it is the thing that
+     *  creates the list below it, and Material's bottom navigation stops at
+     *  five destinations — a tab of its own would have cost Chats or Hosting. */
+    private fun newJobCard(): View {
+        return card {
             jobText = EditText(context).apply {
                 setText("The quick brown fox jumps over the lazy dog, then reads the entire internet aloud.")
                 minLines = 3
@@ -525,14 +524,11 @@ class MainActivity : AppCompatActivity() {
                     if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
                     val started = startTtsJob(text, if (pickedSave) "TTS " + text.take(24) else "TTS job",
                         save = pickedSave, voiceName = pickedVoice)
-                    // a queued job belongs to the Jobs tab — go watch it there
-                    if (started) selectTab(TAB_JOBS)
+                    if (started) refreshJobsIfChanged()
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(actions)
-        })
-
-        return scroll
+        }
     }
 
     /** Current Status pane, pinned above the tabs. */
@@ -706,31 +702,111 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         col.addView(topRow)
 
-        // Live mode belongs to a speaker, so it is launched from here. The
-        // per-speaker chat icon starts it as that one; this starts it as
-        // whichever Supertonic speaker was used last.
-        col.addView(Button(this).apply {
-            text = "💬  Talk live"
-            setOnClickListener { startTalk(null) }
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) })
-
         voicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, 0) }
         col.addView(voicesList)
         return scroll
     }
 
-    private fun startTalk(voiceName: String?) {
-        if (ModelManager.selectedModel(this)?.engine != "supertonic") {
-            toast("Live mode needs Supertonic 3 — switch the model in Settings")
-            return
+    // ---- Chats tab ---------------------------------------------------------
+
+    /** Conversations are things you keep, so they get a list of their own
+     *  rather than a button that always dropped you into the same unnamed one. */
+    private fun buildChatsTab(): View {
+        val (scroll, col) = page()
+        col.title("Chats")
+        col.caption("Each chat is a conversation you can reopen: the lines, who said them, and " +
+            "the audio already generated for each one.")
+
+        col.addView(Button(this).apply {
+            text = "New chat"
+            setOnClickListener { openChat(null) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        val chats = ChatStore.list(this)
+        if (chats.isEmpty()) {
+            col.addView(TextView(this).apply {
+                text = "No chats yet."
+                alpha = 0.6f; setPadding(0, dp(14), 0, 0)
+            })
+            return scroll
         }
-        if (VoiceStore.styleList(this).isEmpty()) {
-            toast("No Supertonic speakers yet — import a style first")
+        for (c in chats) {
+            col.addView(card {
+                val row = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    isClickable = true
+                    setOnClickListener { openChat(c.id) }
+                }
+                row.addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = c.name
+                        textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                    addView(TextView(context).apply {
+                        text = listOf(
+                            "${c.lines} line${if (c.lines == 1) "" else "s"}",
+                            Wav.fmt(c.seconds),
+                            android.text.format.DateUtils.getRelativeTimeSpanString(c.updated),
+                        ).joinToString(" · ")
+                        textSize = 12f; alpha = 0.6f
+                    })
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                lateinit var moreBtn: ImageButton
+                moreBtn = iconBtn(R.drawable.ic_more, "Chat actions") { chatMenu(moreBtn, c) }
+                row.addView(moreBtn)
+                addView(row)
+            })
+        }
+        return scroll
+    }
+
+    private fun openChat(id: String?) {
+        if (voicesForCurrentModel().isEmpty()) {
+            toast("No speakers for the selected model — add one on the Speakers tab")
             return
         }
         startActivity(Intent(this, TalkActivity::class.java)
-            .putExtra(TalkActivity.EXTRA_VOICE, voiceName))
+            .putExtra(TalkActivity.EXTRA_CHAT_ID, id))
+    }
+
+    private fun chatMenu(anchor: View, c: ChatStore.Meta) {
+        android.widget.PopupMenu(this, anchor).apply {
+            menu.add("Open")
+            menu.add("Rename")
+            menu.add("Delete")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "Open" -> openChat(c.id)
+                    "Rename" -> {
+                        val edit = EditText(this@MainActivity).apply {
+                            setText(c.name); setSingleLine()
+                            setPadding(dp(20), dp(12), dp(20), dp(12))
+                        }
+                        MaterialAlertDialogBuilder(this@MainActivity)
+                            .setTitle("Chat name")
+                            .setView(edit)
+                            .setPositiveButton("Rename") { _, _ ->
+                                ChatStore.rename(this@MainActivity, c.id, edit.text.toString())
+                                selectTab(TAB_CHATS)
+                            }
+                            .setNegativeButton("Cancel", null).show()
+                    }
+                    "Delete" -> MaterialAlertDialogBuilder(this@MainActivity)
+                        .setMessage("Delete “${c.name}” and its audio?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            ChatStore.delete(this@MainActivity, c.id)
+                            selectTab(TAB_CHATS)
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                }
+                true
+            }
+            show()
+        }
     }
 
     /** Import and export in one menu: a single file, a whole folder, or the
@@ -881,7 +957,6 @@ class MainActivity : AppCompatActivity() {
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
                     row.addView(previewControl(v, hasPreview))
-                    row.addView(iconBtn(R.drawable.ic_chat, "Talk live as this speaker") { startTalk(v.name) })
                     lateinit var moreBtn: ImageButton
                     moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
                     row.addView(moreBtn)
@@ -1345,6 +1420,10 @@ class MainActivity : AppCompatActivity() {
     private fun buildJobsTab(): View {
         val (scroll, col) = page()
         col.title("Jobs")
+        col.caption("Share a web page — or any selected text — to TTS Runner from another app's " +
+            "share sheet and it fetches the article, strips the navigation and reads it aloud. " +
+            "You get the extracted text to check and edit before a word is spoken.")
+        col.addView(newJobCard())
         jobsSummary = TextView(this).apply { textSize = 13f; alpha = 0.7f; setPadding(0, 0, 0, dp(12)) }
         col.addView(jobsSummary)
 
@@ -1917,10 +1996,10 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_EXPORT_DIR = 13
         private const val REQ_BACKUP_DIR = 14
         private const val REQ_SAVE_SPEC = 15
-        private const val TAB_NEWJOB = 1
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3
         private const val TAB_SETTINGS = 4
         private const val TAB_HOST = 5
+        private const val TAB_CHATS = 6
     }
 }
