@@ -489,16 +489,16 @@ class MainActivity : AppCompatActivity() {
             }
             addView(jobText)
 
-            val optionsRow = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            // voice and mode on separate lines: side by side, a long speaker
+            // name squeezed "Save file" into one letter per line on a phone
             voicePickBtn = Button(context).apply { setOnClickListener { pickVoiceDialog() } }
-            optionsRow.addView(voicePickBtn)
+            addView(voicePickBtn, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             val modeGroup = RadioGroup(context).apply { orientation = LinearLayout.HORIZONTAL }
             modeGroup.addView(RadioButton(context).apply { text = "Listen"; id = 1; isChecked = true })
             modeGroup.addView(RadioButton(context).apply { text = "Save file"; id = 2 })
             modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == 2 }
-            optionsRow.addView(modeGroup, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(12) })
-            addView(optionsRow)
+            addView(modeGroup)
 
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             // live mode lives on the Speakers tab now: you start it as a

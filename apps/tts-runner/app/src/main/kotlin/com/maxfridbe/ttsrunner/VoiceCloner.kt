@@ -33,10 +33,30 @@ class VoiceCloner(private val ctx: Context) {
         const val STYLE_ASSET = "style_encoder.onnx"
         private const val RATE = 16000
 
-        /** Whether this build carries a trained encoder at all. */
-        fun available(ctx: Context): Boolean = try {
+        /** Side-loaded encoder, which is how it ships while it is still being
+         *  trained: 89 MB of ONNX does not belong in the APK until the thing
+         *  is good enough to keep. Push the pair into this folder and the
+         *  feature appears.
+         *
+         *      adb push spk_encoder.onnx /data/local/tmp/
+         *      adb shell run-as com.maxfridbe.ttsrunner \
+         *          cp /data/local/tmp/spk_encoder.onnx files/cloner/ */
+        fun dir(ctx: Context): java.io.File = java.io.File(ctx.filesDir, "cloner").apply { mkdirs() }
+
+        private fun sideloaded(ctx: Context) =
+            java.io.File(dir(ctx), SPK_ASSET).exists() && java.io.File(dir(ctx), STYLE_ASSET).exists()
+
+        private fun embedded(ctx: Context) = try {
             ctx.assets.list("")?.toSet()?.containsAll(listOf(SPK_ASSET, STYLE_ASSET)) == true
         } catch (_: Exception) { false }
+
+        /** Whether this phone has a trained encoder at all, from either place. */
+        fun available(ctx: Context): Boolean = sideloaded(ctx) || embedded(ctx)
+    }
+
+    private fun bytes(name: String): ByteArray {
+        val f = java.io.File(dir(ctx), name)
+        return if (f.exists()) f.readBytes() else ctx.assets.open(name).use { it.readBytes() }
     }
 
     private fun load(): Boolean {
@@ -47,8 +67,8 @@ class VoiceCloner(private val ctx: Context) {
             val opts = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
             }
-            spk = e.createSession(ctx.assets.open(SPK_ASSET).use { it.readBytes() }, opts)
-            style = e.createSession(ctx.assets.open(STYLE_ASSET).use { it.readBytes() }, opts)
+            spk = e.createSession(bytes(SPK_ASSET), opts)
+            style = e.createSession(bytes(STYLE_ASSET), opts)
             true
         } catch (t: Throwable) {
             DebugLog.log(ctx, "VoiceCloner", "load failed", t as? Exception ?: Exception(t))

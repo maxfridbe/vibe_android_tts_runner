@@ -68,6 +68,21 @@ class SpkWrapper(nn.Module):
         return emb / (emb.norm(dim=-1, keepdim=True) + 1e-8)
 
 
+def inline_weights(path: str) -> None:
+    """Fold a sibling .onnx.data back into the graph.
+
+    The phone loads these as asset bytes — there is no filesystem next to them
+    for ONNX Runtime to find external weights in — so a two-file export would
+    load as a graph with no parameters."""
+    data = path + ".data"
+    if not os.path.exists(data):
+        return
+    import onnx
+    model = onnx.load(path)          # pulls the external tensors in
+    onnx.save_model(model, path, save_as_external_data=False)
+    os.remove(data)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--encoder", default=os.path.join(WORK, "clone_out/encoder.pt.best"))
@@ -85,6 +100,7 @@ def main():
         head, torch.zeros(1, 192), style_path,
         input_names=["embedding"], output_names=["style_ttl", "style_dp"],
         dynamic_axes={"embedding": {0: "batch"}}, opset_version=args.opset)
+    inline_weights(style_path)
     print(f"{style_path}  {os.path.getsize(style_path)/1e6:.1f} MB")
 
     os.environ.setdefault("SB_CACHE", os.path.expanduser("~/.cache/speechbrain/ecapa"))
@@ -95,10 +111,14 @@ def main():
     spk = SpkWrapper(sb.mods).eval()
     spk_path = os.path.join(args.out, "spk_encoder.onnx")
     # 4 s of 16 kHz audio as the tracing shape; the length axis stays dynamic
+    # The legacy exporter cannot trace speechbrain's STFT ("STFT does not
+    # currently support complex types"), so this one goes through the dynamo
+    # exporter — which is also why the weights need inlining afterwards.
     torch.onnx.export(
         spk, torch.zeros(1, 16000 * 4), spk_path,
         input_names=["wav"], output_names=["embedding"],
         dynamic_axes={"wav": {0: "batch", 1: "samples"}}, opset_version=args.opset)
+    inline_weights(spk_path)
     print(f"{spk_path}  {os.path.getsize(spk_path)/1e6:.1f} MB")
 
 
