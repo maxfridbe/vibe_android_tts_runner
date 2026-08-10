@@ -4,33 +4,42 @@
 
 Share any text or article link to **TTS Runner** and it reads it aloud in a
 cloned voice, entirely on-device: no server, no account, no audio leaving the
-phone. Built on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s Qwen3-TTS
-support (12 Hz codec, 24 kHz audio), with speaker-embedding voice cloning from
-a 10–20 s reference clip.
+phone. Two engines ship side by side — [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
+Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
+(99M ONNX, faster than real time, style voices).
 
-- **Listen or save** — stream playback, or render to `Music/TTS Runner/*.m4a`
-  in the background with the screen off.
-- **Voices** — clone from any recording, or *design* one (describe it, or roll
-  random voices until you like one). Previews are generated once per model and
-  cached.
-- **Jobs** — history with per-job stats (audio length, generation time, RTF),
+- **Speakers** — clone from a recording or record one now, *design* one from a
+  description, or import style files. Every speaker carries its emoji and how
+  fast it answers: ⚡ about a second a sentence, 🐢 tens of seconds.
+- **Chats** — conversations you keep. Type a line, hear it immediately, switch
+  speaker mid-scene, drag lines into the order you want, replay the whole
+  thing or export it as one track. The audio travels with the line, so
+  reordering costs nothing.
+- **Jobs** — compose, listen or render to `Music/TTS Runner/*.m4a` with the
+  screen off; history with per-job stats (audio length, generation time, RTF),
   re-run with a different voice, play or share the result.
+- **Hosting** — serve the phone's voices as an OpenAI-compatible
+  `POST /v1/audio/speech`, with `/openapi.yaml` and a browser client on the
+  same port. Requests queue as jobs and disappear when delivered.
 - **Resumable** — every generated chunk is cached, so a job the OS kills
   mid-run continues from the chunk it reached, on whichever engine you pick.
   Save jobs go further and resume *themselves*: a dead-man alarm revives the
   killed engine (same backend, never a silent switch) as long as each attempt
   makes progress, so a long job survives any number of kills unattended.
-- **Backends** — CPU everywhere; OpenCL on Adreno; Vulkan on everything else.
-  The app marks the recommended one for the detected GPU and then stays out of
-  the way: it never switches engines behind your back.
+- **Backends** — per engine, and per phone: CPU / OpenCL / Vulkan for the Qwen
+  models, CPU / NNAPI / XNNPACK for Supertonic. The app stars the one measured
+  fastest for the detected GPU, says why, and never switches behind your back.
+- **Backup folder** — point it at a real folder and every speaker is mirrored
+  there, and anything the folder has that the phone lacks is imported. A
+  reinstall becomes a restore.
 
 Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase): the build
 is fully containerized, so the host needs only podman or docker — no Android
 SDK, NDK, JDK, or Gradle install.
 
-| New job | Voices | Jobs | Settings |
-|---|---|---|---|
-| ![New job](docs/screenshots/newjob.png) | ![Voices](docs/screenshots/voices.png) | ![Jobs](docs/screenshots/jobs.png) | ![Settings](docs/screenshots/settings.png) |
+| Jobs | Speakers | Chats | Hosting | Settings |
+|---|---|---|---|---|
+| ![Jobs](docs/screenshots/jobs.png) | ![Speakers](docs/screenshots/speakers.png) | ![Chats](docs/screenshots/chats.png) | ![Hosting](docs/screenshots/hosting.png) | ![Settings](docs/screenshots/settings.png) |
 
 <sup>Screenshots: Galaxy S24 FE, Android 16.</sup>
 
@@ -62,13 +71,21 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
 
 ## Use it
 
-1. Open the app once: **Settings** → download a model (1.7B Q4_K_M, ~1.5 GB),
-   **Voices** → import a recording (10–20 s of clean speech, one speaker) or
-   design a voice.
-2. From any app, share text or an article URL → *Read aloud (TTS Runner)*.
-   Selected text works too, via the text-selection menu.
-3. Or use the **New job** tab directly: paste text, pick a voice, Listen or
-   Save.
+1. Open the app once: **Settings** → download a model (Supertonic 3 at ~400 MB
+   is the fast one; the Qwen models clone from your own recordings),
+   **Speakers** → Clone (from a sound file or record now), Design, or restore
+   from a backup folder.
+2. From any app, share text or an article URL → *Read aloud (TTS Runner)*. The
+   extracted text is shown in an editor first, so you can trim whatever the
+   readability pass kept before a word is spoken; then Speak, Save, or **Play
+   live** for a player with pause, save and share. Selected text works too, via
+   the text-selection menu.
+3. Or compose at the top of the **Jobs** tab: paste text, pick a speaker,
+   Listen or Save.
+4. **Chats** for conversation: a dropdown picks who speaks next, ten expression
+   tags sit above the keyboard (see `docs/expression-tags.md` — they were found
+   by probing the model, not documented upstream), and long-pressing a line
+   drags it anywhere in the timeline.
 
 Shared URLs are fetched and run through a readability pass: page furniture
 (nav, share bars, cookie banners, comments, related rails) is dropped, the
@@ -81,8 +98,18 @@ emoji and `[17]`-style citations are stripped before speaking.
 
 ### Cloning a voice for Supertonic
 
-Supertonic's published models contain no speaker encoder, so the app cannot
-clone into a Supertonic voice on-device. It can be done offline on a CUDA box
+Supertonic's published models contain no speaker encoder. There are two ways
+round that, and they are not equivalent.
+
+**On the phone (experimental).** Settings → *On-device voice cloning* downloads
+an 89 MB encoder pair trained for this repo (`models/cloner`, and
+`docs/on-device-cloning.md` for how). It predicts a style from a recording in
+about a second — and scores **0.22** held-out speaker similarity against
+**0.82** for the desktop route below, so expect a voice in the right family
+rather than the person. The measurements, and what would close the gap, are in
+that document.
+
+**On a CUDA box (the quality reference).** It can be done offline
 with [Mimocro/supertonic-voice-cloning](https://github.com/Mimocro/supertonic-voice-cloning),
 which inverts the style tensors through the public ONNX weights, and
 `tooling/clone_voice.sh` drives it end to end:
@@ -108,11 +135,11 @@ So the script runs several starts (one per GPU at a time — two on one 12 GB
 card OOM) and picks the winner with `tooling/eval_style.py`, which scores
 candidates on sentences none of them were optimised against.
 
-Two engines ship side by side. **Qwen3-TTS** (1.7B, llama.cpp) clones a voice
-from your own recording but runs at RTF 5–6 on a phone. **Supertonic 3** (99M,
-ONNX Runtime) runs *below* real time — 5.7 s of audio in 2.7 s on an S24 FE —
-across 31 languages, but speaks only pre-computed style voices: the published
-models have no speaker encoder, so it cannot clone from a recording.
+**Qwen3-TTS** (1.7B, llama.cpp) clones a voice from your own recording but runs
+at RTF 5–6 on a phone. **Supertonic 3** (99M, ONNX Runtime) runs *below* real
+time — 5.7 s of audio in 2.7 s on an S24 FE — across 31 languages, and speaks
+style voices: either the ten shipped ones, styles cloned on a desktop, or the
+experimental on-device encoder above.
 
 | Model | Source |
 |---|---|
@@ -150,12 +177,20 @@ apps/tts-runner/app/src/main/
     ├── TtsService.kt       # foreground service in a separate ":engine"
     │                       # process (a native crash can't kill the UI);
     │                       # chunk → generate → AudioTrack/AAC pipeline
-    ├── MainActivity.kt     # tabs: New job / Voices / Jobs / Settings
+    ├── MainActivity.kt     # tabs: Jobs / Speakers / Chats / Hosting / Settings
     ├── ShareActivity.kt    # share target: clean text → voice → job
     ├── TextCleaner.kt      # jsoup readability + plain-text cleanup
     ├── Chunker.kt          # natural-break splitting (~200 chars ≈ 15 s)
     ├── ModelManager.kt     # catalog, resumable downloads, requantize
-    ├── JobStore.kt / VoiceStore.kt / AudioSaver.kt / AudioShare.kt
+    ├── TalkActivity.kt     # a chat as a timeline: drag to reorder, replay all
+    ├── PlayerActivity.kt   # transport for a page being read: pause/save/share
+    ├── HttpServer.kt       # OpenAI-compatible API + the browser client
+    ├── HostingService.kt   # keeps it serving in the background
+    ├── SynthBridge.kt      # blocking synthesis for non-UI callers
+    ├── SupertonicEngine.kt # the ONNX pipeline (dp → text enc → flow → vocoder)
+    ├── VoiceCloner.kt      # on-device style prediction (experimental)
+    ├── ChatStore.kt / JobStore.kt / VoiceStore.kt / SpeakerFolder.kt
+    ├── AudioSaver.kt / AudioShare.kt / Wav.kt / Backends.kt
     └── TtsEngine.kt        # JNI facade
 ```
 

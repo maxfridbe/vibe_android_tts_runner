@@ -595,15 +595,15 @@ class MainActivity : AppCompatActivity() {
             "speakers one model can use.")
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         topRow.addView(Button(this).apply {
-            text = "Record"
-            setOnClickListener { startActivity(Intent(this@MainActivity, RecordActivity::class.java)) }
+            text = "Clone ▾"
+            setOnClickListener { cloneMenu(this) }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         topRow.addView(Button(this).apply {
             text = "Design"
             setOnClickListener { designVoiceDialog() }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         topRow.addView(Button(this).apply {
-            text = "Files ▾"
+            text = "Backup / Restore ▾"
             setOnClickListener { filesMenu(this) }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
         col.addView(topRow)
@@ -708,6 +708,27 @@ class MainActivity : AppCompatActivity() {
                             selectTab(TAB_CHATS)
                         }
                         .setNegativeButton("Cancel", null).show()
+                }
+                true
+            }
+            show()
+        }
+    }
+
+    /** Both ways to turn a person into a speaker: a recording you already have,
+     *  or one you make now. Either way it lands as a reference voice and is
+     *  cloned into a Supertonic style if the encoder is installed. */
+    private fun cloneMenu(anchor: View) {
+        android.widget.PopupMenu(this, anchor).apply {
+            menu.add("From a sound file…")
+            menu.add("Record now…")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "From a sound file…" -> startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("audio/*"), REQ_CLONE_AUDIO)
+                    "Record now…" -> startActivity(Intent(this@MainActivity, RecordActivity::class.java))
                 }
                 true
             }
@@ -947,12 +968,23 @@ class MainActivity : AppCompatActivity() {
     private fun speakerMenu(anchor: View, v: VoiceStore.Voice) {
         android.widget.PopupMenu(this, anchor).apply {
             menu.add("Share as a file")
+            menu.add("Share preview audio")
             menu.add("Save to folder…")
             menu.add("Edit…")
             menu.add("Delete")
             setOnMenuItemClickListener {
                 when (it.title) {
                     "Share as a file" -> shareSpeaker(v)
+                    // the file is what another phone imports; the preview is
+                    // what you send someone to let them hear the voice
+                    "Share preview audio" -> {
+                        val p = VoiceStore.previewFile(this@MainActivity, v.name, currentModelId())
+                        if (!p.exists()) toast("Generate a preview first (▶)")
+                        else thread {
+                            runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice ${v.name}") }
+                                .onFailure { e -> runOnUiThread { toast("Share failed: ${e.message}") } }
+                        }
+                    }
                     "Save to folder…" -> {
                         exportOne = v
                         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_EXPORT_DIR)
@@ -1312,6 +1344,22 @@ class MainActivity : AppCompatActivity() {
                 if (ok > 0) toast("Imported $ok speaker${if (ok == 1) "" else "s"}")
                 rebuildVoices()
             }
+            REQ_CLONE_AUDIO -> data.data?.let { uri ->
+                val v = try {
+                    VoiceStore.import(this, uri, displayName(uri, "recording.wav"))
+                } catch (e: Exception) {
+                    toast("Could not read that file: ${e.message}"); return
+                }
+                rebuildVoices()
+                if (VoiceCloner.available(this)) cloneToSupertonic(v)
+                else MaterialAlertDialogBuilder(this)
+                    .setTitle("Imported “${v.name}”")
+                    .setMessage("It is usable with the Qwen models as it is. To turn it into a " +
+                        "fast Supertonic speaker, download the cloning encoder in Settings — or " +
+                        "run the desktop cloning tool, which is still much closer to the original.")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
             REQ_IMPORT_DIR -> data.data?.let { importFolder(it) }
             REQ_EXPORT_DIR -> data.data?.let { exportFolder(it, exportOne); exportOne = null }
             REQ_SAVE_SPEC -> data.data?.let { uri ->
@@ -1463,7 +1511,12 @@ class MainActivity : AppCompatActivity() {
                 addView(TextView(context).apply {
                     textSize = 12f; alpha = 0.7f
                     text = "$statusIcon ${j.status} · ${fmt.format(java.util.Date(j.id))} · " +
-                        "${j.text.length} chars · ${VoiceStore.label(this@MainActivity, j.voice)} · ${j.model}/${j.backend}$stats" +
+                        // speed comes from the job's own model, not from today's library:
+                        // the voice may have been renamed or deleted since
+                        "${j.text.length} chars · " +
+                        VoiceStore.label(this@MainActivity, j.voice,
+                            ModelManager.CATALOG.find { m -> m.id == j.model }?.engine == "supertonic") +
+                        " · ${j.model}/${j.backend}$stats" +
                         (if (j.output.isNotBlank()) "\n→ ${j.output}" else "") +
                         (if (j.error.isNotBlank()) "\n${j.error}" else "")
                 })
@@ -1816,6 +1869,9 @@ class MainActivity : AppCompatActivity() {
             modelGroup.setOnCheckedChangeListener { _, id ->
                 ModelManager.CATALOG.getOrNull(id)?.let { ModelManager.selectModel(this@MainActivity, it.id) }
                 refreshModelUi()
+                // the Engine card below belongs to the model: rebuild the tab so
+                // it stops offering llama.cpp backends to Supertonic and back
+                ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
             }
         })
 
@@ -2006,6 +2062,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_EXPORT_DIR = 13
         private const val REQ_BACKUP_DIR = 14
         private const val REQ_SAVE_SPEC = 15
+        private const val REQ_CLONE_AUDIO = 16
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3
         private const val TAB_SETTINGS = 4
