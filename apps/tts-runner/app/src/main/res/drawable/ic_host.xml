@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hosting: a server rack with a signal above it — the phone as the machine
+     everything else on the network talks to. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24"
+    android:tint="?attr/colorControlNormal">
+    <!-- two rack units -->
+    <path android:fillColor="@android:color/white"
+        android:pathData="M4,12h16c0.55,0 1,0.45 1,1v3c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1v-3c0,-0.55 0.45,-1 1,-1z" />
+    <path android:fillColor="@android:color/white"
+        android:pathData="M4,18h16c0.55,0 1,0.45 1,1v2c0,0.55 -0.45,1 -1,1H4c-0.55,0 -1,-0.45 -1,-1v-2c0,-0.55 0.45,-1 1,-1z" />
+    <!-- status lamps, punched out of the units -->
+    <path android:fillColor="?attr/colorSurface"
+        android:pathData="M6,14.5m-0.9,0a0.9,0.9 0,1 1,1.8 0a0.9,0.9 0,1 1,-1.8 0" />
+    <path android:fillColor="?attr/colorSurface"
+        android:pathData="M6,20m-0.9,0a0.9,0.9 0,1 1,1.8 0a0.9,0.9 0,1 1,-1.8 0" />
+    <!-- broadcast arcs -->
+    <path android:fillColor="@android:color/white"
+        android:pathData="M12,2c-2.2,0 -4.2,0.9 -5.7,2.3l1.4,1.4C8.9,4.6 10.4,4 12,4s3.1,0.6 4.3,1.7l1.4,-1.4C16.2,2.9 14.2,2 12,2z" />
+    <path android:fillColor="@android:color/white"
+        android:pathData="M12,6c-1.1,0 -2.1,0.4 -2.8,1.2l1.4,1.4C11,8.2 11.5,8 12,8s1,0.2 1.4,0.6l1.4,-1.4C14.1,6.4 13.1,6 12,6z" />
+</vector>

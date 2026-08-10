@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- the speech API host keeps serving while the app is in the background -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- screen-off generation: Samsung throttles background CPU without it -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -43,6 +45,11 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- transport for a page being read aloud right now -->
+        <activity
+            android:name=".PlayerActivity"
+            android:exported="false" />
+
         <!-- share-sheet / text-selection target: floats as a dialog -->
         <activity
             android:name=".ShareActivity"
@@ -60,6 +67,12 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- HTTP host for the OpenAI-compatible speech API and its web client -->
+        <service
+            android:name=".HostingService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- share-as-m4a for locally generated audio -->
         <provider

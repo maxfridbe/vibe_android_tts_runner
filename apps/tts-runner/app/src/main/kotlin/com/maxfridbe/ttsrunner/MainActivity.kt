@@ -46,7 +46,7 @@ class MainActivity : AppCompatActivity() {
     private var navSelect: ((Int) -> Unit)? = null
     private val tabs = mutableMapOf<Int, View>()
     private var currentTab = TAB_NEWJOB
-    private val tabOrder = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_SETTINGS)
+    private val tabOrder = listOf(TAB_NEWJOB, TAB_VOICES, TAB_JOBS, TAB_HOST, TAB_SETTINGS)
 
     // New job tab widgets (referenced from the status receiver)
     private lateinit var runStatus: TextView
@@ -126,6 +126,7 @@ class MainActivity : AppCompatActivity() {
     private fun finishUi() {
         runProgress.progress = 1000
         etaText.text = ""
+        previewing = null      // whatever was spinning has landed, one way or another
         if (tabs.containsKey(TAB_JOBS)) rebuildJobs()
         if (tabs.containsKey(TAB_VOICES)) rebuildVoices()
     }
@@ -185,7 +186,8 @@ class MainActivity : AppCompatActivity() {
             menu.add(0, TAB_NEWJOB, 0, "New job").setIcon(R.drawable.ic_add)
             menu.add(0, TAB_VOICES, 1, "Speakers").setIcon(R.drawable.ic_mic)
             menu.add(0, TAB_JOBS, 2, "Jobs").setIcon(R.drawable.ic_jobs)
-            menu.add(0, TAB_SETTINGS, 3, "Settings").setIcon(R.drawable.ic_settings)
+            menu.add(0, TAB_HOST, 3, "Hosting").setIcon(R.drawable.ic_host)
+            menu.add(0, TAB_SETTINGS, 4, "Settings").setIcon(R.drawable.ic_settings)
         }
 
         val root: View = if (wide) {
@@ -264,12 +266,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun showTab(id: Int) {
         currentTab = id
-        if (id == TAB_SETTINGS) tabs.remove(id)  // rebuilt each visit (battery button state etc.)
+        // rebuilt each visit: Settings reads live permission state, Hosting
+        // reads whether the server is up right now
+        if (id == TAB_SETTINGS || id == TAB_HOST) tabs.remove(id)
         val v = tabs.getOrPut(id) {
             when (id) {
                 TAB_NEWJOB -> buildNewJobTab()
                 TAB_VOICES -> buildVoicesTab()
                 TAB_JOBS -> buildJobsTab()
+                TAB_HOST -> buildHostTab()
                 else -> buildSettingsTab()
             }.noStateSave()
         }
@@ -472,7 +477,9 @@ class MainActivity : AppCompatActivity() {
     private fun buildNewJobTab(): View {
         val (scroll, col) = page()
         col.title("New TTS job")
-        col.caption("Or share text / an article link to TTS Runner from any app.")
+        col.caption("Share a web page — or any selected text — to TTS Runner from another app's " +
+            "share sheet and it fetches the article, strips the navigation and reads it aloud. " +
+            "You get the extracted text to check and edit before a word is spoken.")
 
         col.addView(card {
             jobText = EditText(context).apply {
@@ -497,6 +504,20 @@ class MainActivity : AppCompatActivity() {
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             // live mode lives on the Speakers tab now: you start it as a
             // particular speaker, which is a choice about the voice, not the job
+            actions.addView(Button(context).apply {
+                text = "Play live"
+                setOnClickListener {
+                    val text = jobText.text.toString()
+                    if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
+                    val name = pickedVoice ?: voicesForCurrentModel().firstOrNull()
+                    if (startTtsJob(text, "Reading", save = false, voiceName = name)) {
+                        startActivity(Intent(this@MainActivity, PlayerActivity::class.java)
+                            .putExtra(PlayerActivity.EXTRA_TITLE, "Reading")
+                            .putExtra(PlayerActivity.EXTRA_TEXT, text)
+                            .putExtra(PlayerActivity.EXTRA_VOICE, name ?: ""))
+                    }
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             actions.addView(Button(context).apply {
                 text = "Add job"
                 setOnClickListener {
@@ -593,7 +614,7 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TEXT, text)
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, style)
-                .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
+                .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
                 .putExtra(TtsService.EXTRA_SAVE, save))
             ui.postDelayed({ refreshJobsIfChanged() }, 500)
             return true
@@ -605,7 +626,7 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, text)
             .putExtra(TtsService.EXTRA_TITLE, title)
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
+            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
             .putExtra(TtsService.EXTRA_SAVE, save))
         // the engine writes the "running" row from its own process; give it a
         // beat, then show it (broadcasts refresh the list from then on)
@@ -854,10 +875,7 @@ class MainActivity : AppCompatActivity() {
                         ellipsize = android.text.TextUtils.TruncateAt.END
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
-                    lateinit var prevBtn: ImageButton
-                    prevBtn = iconBtn(R.drawable.ic_play,
-                        if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
-                    row.addView(prevBtn)
+                    row.addView(previewControl(v, hasPreview))
                     row.addView(iconBtn(R.drawable.ic_chat, "Talk live as this speaker") { startTalk(v.name) })
                     lateinit var moreBtn: ImageButton
                     moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
@@ -901,10 +919,7 @@ class MainActivity : AppCompatActivity() {
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
-                lateinit var prevBtn: ImageButton
-                prevBtn = iconBtn(R.drawable.ic_play,
-                    if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, prevBtn) }
-                head.addView(prevBtn)
+                head.addView(previewControl(v, hasPreview))
                 if (VoiceCloner.available(this@MainActivity)) {
                     head.addView(iconBtn(R.drawable.ic_add, "Clone to a Supertonic voice") {
                         cloneToSupertonic(v)
@@ -1014,17 +1029,42 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Voice whose preview is being generated right now, so its row can show a
+     *  spinner instead of a play button that looks like it did nothing. */
+    private var previewing: String? = null
+
+    /** Play button, or a spinner while this voice is being generated. The
+     *  first tap on a voice costs a model load and a synthesis pass — several
+     *  seconds — and an unchanged play icon reads as "nothing happened". */
+    private fun previewControl(v: VoiceStore.Voice, hasPreview: Boolean): View {
+        if (previewing == v.name) {
+            return ProgressBar(this).apply {
+                isIndeterminate = true
+                val s = dp(22)
+                layoutParams = LinearLayout.LayoutParams(s, s).apply {
+                    marginStart = dp(9); marginEnd = dp(9)
+                }
+            }
+        }
+        lateinit var btn: ImageButton
+        btn = iconBtn(R.drawable.ic_play,
+            if (hasPreview) "Play preview" else "Generate preview") { previewVoice(v, btn) }
+        return btn
+    }
+
     private fun previewVoice(v: VoiceStore.Voice, btn: ImageButton) {
         val cached = VoiceStore.previewFile(this, v.name, currentModelId())
         if (cached.exists()) { playFile(cached.absolutePath, btn); return }
         if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        previewing = v.name
+        rebuildVoices()
         toast("Generating preview with ${currentModelId()} — plays when ready, then cached")
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, VoiceStore.PREVIEW_TEXT)
             .putExtra(TtsService.EXTRA_TITLE, "Preview: ${v.name}")
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu"))
+            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
             .putExtra(TtsService.EXTRA_PREVIEW, true))
     }
 
@@ -1153,7 +1193,7 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_DESIGN, true)
             .putExtra(TtsService.EXTRA_INSTRUCT, designInstruct)
             .putExtra(TtsService.EXTRA_SEED, Random.nextInt(1, 1 shl 30))
-            .putExtra(TtsService.EXTRA_BACKEND, prefs().getString("backend", "cpu")))
+            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this)))
         toast(if (designInstruct.isBlank()) "Rolling a random voice…" else "Designing: “${designInstruct.take(48)}…”")
     }
 
@@ -1266,6 +1306,13 @@ class MainActivity : AppCompatActivity() {
             }
             REQ_IMPORT_DIR -> data.data?.let { importFolder(it) }
             REQ_EXPORT_DIR -> data.data?.let { exportFolder(it, exportOne); exportOne = null }
+            REQ_SAVE_SPEC -> data.data?.let { uri ->
+                val port = prefs().getInt("host_port", HostingService.DEFAULT_PORT)
+                val base = "http://${HttpServer.lanAddress() ?: "127.0.0.1"}:$port"
+                runCatching {
+                    contentResolver.openOutputStream(uri)!!.use { it.write(specText(base).toByteArray()) }
+                }.onSuccess { toast("Spec saved") }.onFailure { toast("Save failed: ${it.message}") }
+            }
             REQ_BACKUP_DIR -> data.data?.let {
                 SpeakerFolder.remember(this, it)
                 toast("Speakers will be kept in ${SpeakerFolder.label(this)}")
@@ -1531,6 +1578,170 @@ class MainActivity : AppCompatActivity() {
 
     // ---- Settings tab ------------------------------------------------------
 
+    // ---- Hosting tab -------------------------------------------------------
+
+    /** Turns the phone into a speech server: an OpenAI-compatible endpoint and
+     *  a browser client for it, both on the same port. Everything stays on the
+     *  device — this is about reaching it from a laptop, not about the cloud. */
+    private fun buildHostTab(): View {
+        val (scroll, col) = page()
+        col.title("Hosting")
+        col.caption("Serve this phone's voices as an OpenAI-compatible speech API, and a web page " +
+            "that uses it. Anything on your network can call it; nothing leaves the phone.")
+
+        val port = prefs().getInt("host_port", HostingService.DEFAULT_PORT)
+        val lan = HttpServer.lanAddress()
+        val base = "http://${lan ?: "127.0.0.1"}:$port"
+
+        col.addView(card {
+            addView(TextView(context).apply {
+                text = if (HostingService.running) "Running" else "Stopped"
+                textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(context).apply {
+                text = if (HostingService.running) base
+                       else HostingService.lastBindError?.let { "Last attempt failed: $it" }
+                           ?: "Start it to get an address"
+                textSize = 14f; alpha = 0.8f
+                setPadding(0, dp(2), 0, dp(8))
+            })
+            if (lan == null) {
+                addView(TextView(context).apply {
+                    text = "No Wi-Fi address — on mobile data only the phone itself can reach it."
+                    textSize = 12f; alpha = 0.7f
+                })
+            }
+
+            val portRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            portRow.addView(TextView(context).apply {
+                text = "Port"; textSize = 13f; alpha = 0.7f
+                setPadding(0, 0, dp(10), 0)
+            })
+            val portEdit = EditText(context).apply {
+                setText(port.toString())
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setSingleLine()
+                isEnabled = !HostingService.running
+            }
+            portRow.addView(portEdit, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(portRow)
+
+            addView(Button(context).apply {
+                text = if (HostingService.running) "Stop server" else "Start server"
+                setOnClickListener {
+                    if (HostingService.running) {
+                        HostingService.stop(this@MainActivity)
+                    } else {
+                        val p = portEdit.text.toString().toIntOrNull()
+                        if (p == null || p !in 1024..65535) {
+                            toast("Pick a port between 1024 and 65535"); return@setOnClickListener
+                        }
+                        prefs().edit().putInt("host_port", p).apply()
+                        HostingService.start(this@MainActivity, p)
+                    }
+                    // the service broadcasts, but rebuilding after a beat is
+                    // what makes the button flip without a second visit
+                    ui.postDelayed({ if (currentTab == TAB_HOST) selectTab(TAB_HOST) }, 700)
+                }
+            })
+        })
+
+        col.addView(card {
+            addView(TextView(context).apply {
+                text = "Browser client"; textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(context).apply {
+                text = "Open $base on any device here: type text, pick a speaker, hear it back. " +
+                    "The page calls the same endpoints as any other client."
+                textSize = 13f; alpha = 0.75f
+                setPadding(0, dp(2), 0, dp(8))
+            })
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(Button(context).apply {
+                text = "Open"
+                setOnClickListener {
+                    if (!HostingService.running) { toast("Start the server first"); return@setOnClickListener }
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(base)))
+                    }.onFailure { toast("No browser to open it with") }
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(context).apply {
+                text = "Copy address"
+                setOnClickListener {
+                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("TTS Runner", base))
+                    toast("Copied $base")
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(row)
+        })
+
+        col.addView(card {
+            addView(TextView(context).apply {
+                text = "API specification"; textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(context).apply {
+                text = "OpenAPI 3.1 for POST /v1/audio/speech, /v1/models and /v1/audio/voices. " +
+                    "Hand it to a generator and you have a client in any language."
+                textSize = 13f; alpha = 0.75f
+                setPadding(0, dp(2), 0, dp(8))
+            })
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(Button(context).apply {
+                text = "Share"
+                setOnClickListener { shareSpec(base) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Button(context).apply {
+                text = "Save"
+                setOnClickListener {
+                    startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT)
+                        .addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType("application/yaml")
+                        .putExtra(Intent.EXTRA_TITLE, "openapi.yaml"), REQ_SAVE_SPEC)
+                }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(row)
+        })
+
+        col.addView(card {
+            addView(TextView(context).apply {
+                text = "One request at a time"; textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(context).apply {
+                text = "The engine takes over on each new request, so callers are served in turn " +
+                    "rather than in parallel — a second request would cut the first one off. " +
+                    "There is no authentication, so keep this to networks you trust."
+                textSize = 13f; alpha = 0.75f
+            })
+        })
+
+        return scroll
+    }
+
+    /** The spec with this server's address baked into it, so whoever receives
+     *  it can point a generated client straight at the phone. */
+    private fun specText(base: String): String =
+        assets.open("openapi.yaml").use { it.readBytes() }.decodeToString()
+            .replace("{{SERVER}}", base)
+
+    private fun shareSpec(base: String) {
+        runCatching {
+            val f = File(File(cacheDir, "share").apply { mkdirs() }, "openapi.yaml")
+            f.writeText(specText(base))
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", f)
+            startActivity(Intent.createChooser(
+                Intent(Intent.ACTION_SEND)
+                    .setType("application/yaml")
+                    .putExtra(Intent.EXTRA_STREAM, uri)
+                    .putExtra(Intent.EXTRA_SUBJECT, "TTS Runner speech API")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                "Share the API spec"))
+        }.onFailure { toast("Share failed: ${it.message}") }
+    }
+
     private lateinit var modelStatus: TextView
     private lateinit var modelBtn: Button
     private lateinit var modelProgress: ProgressBar
@@ -1562,40 +1773,40 @@ class MainActivity : AppCompatActivity() {
         })
 
         col.addView(card {
-            addView(TextView(context).apply { text = "Engine"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
+            // The engines have different backends, so this card follows the
+            // selected model: offering "Vulkan" to Supertonic meant nothing.
+            val model = ModelManager.selectedModel(this@MainActivity)
+            val engine = model?.engine ?: "llama"
+            addView(TextView(context).apply {
+                text = "Engine for ${model?.label ?: "the selected model"}"
+                textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            })
+            val options = Backends.options(engine)
             val backendGroup = RadioGroup(context)
-            val cpuBtn = RadioButton(context).apply { text = "CPU"; id = 100 }
-            val clBtn = RadioButton(context).apply { text = "GPU · OpenCL (Adreno, Q4_0 model only)"; id = 101 }
-            val vkBtn = RadioButton(context).apply { text = "GPU · Vulkan (any model)"; id = 102 }
-            backendGroup.addView(cpuBtn); backendGroup.addView(clBtn); backendGroup.addView(vkBtn)
+            val buttons = options.mapIndexed { i, o ->
+                RadioButton(context).apply {
+                    text = "${o.label} — ${o.why}"
+                    id = 100 + i
+                }.also { backendGroup.addView(it) }
+            }
             addView(backendGroup)
             val detectNote = TextView(context).apply { textSize = 12f; alpha = 0.7f; text = "Detecting GPU…" }
             addView(detectNote)
-            val stored = when (val b = prefs().getString("backend", "cpu")) { "gpu" -> "opencl"; else -> b }
-            backendGroup.check(when (stored) { "opencl" -> 101; "vulkan" -> 102; else -> 100 })
+            val stored = Backends.current(this@MainActivity, engine)
+            backendGroup.check(100 + options.indexOfFirst { it.id == stored }.coerceAtLeast(0))
             backendGroup.setOnCheckedChangeListener { _, id ->
-                prefs().edit().putString("backend",
-                    when (id) { 101 -> "opencl"; 102 -> "vulkan"; else -> "cpu" }).apply()
+                options.getOrNull(id - 100)?.let { Backends.set(this@MainActivity, engine, it.id) }
             }
             thread {
                 val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")
-                val hasAdrenoCl = info.contains("OpenCL") && info.contains("Adreno")
-                val vulkanLine = info.lines().find { it.contains("Vulkan") } ?: ""
-                val rec = when {
-                    hasAdrenoCl -> "opencl"
-                    vulkanLine.isNotEmpty() && !vulkanLine.contains("Adreno") -> "vulkan"
-                    else -> "cpu"
-                }
-                val gpuName = Regex("— ([^(]+)\\(").find(vulkanLine)?.groupValues?.get(1)?.trim()
-                    ?: if (hasAdrenoCl) "Adreno" else "none"
+                val (rec, why) = Backends.recommend(engine, info, model?.gpuCapable ?: false)
+                val gpuName = Backends.gpuName(info)
                 runOnUiThread {
-                    when (rec) {
-                        "opencl" -> clBtn.text = "${clBtn.text}  ★ recommended"
-                        "vulkan" -> vkBtn.text = "${vkBtn.text}  ★ recommended"
-                        else -> cpuBtn.text = "${cpuBtn.text}  ★ recommended"
-                    }
-                    detectNote.text = "Detected GPU: $gpuName. Your choice is kept: a job that fails " +
-                        "on one engine can be resumed on another from the Jobs tab."
+                    val idx = options.indexOfFirst { it.id == rec }
+                    if (idx >= 0) buttons[idx].text = "${buttons[idx].text}  ★ recommended"
+                    detectNote.text = "Detected GPU: $gpuName. Recommended here because $why. " +
+                        "Your choice is kept: a job that fails on one engine can be resumed on " +
+                        "another from the Jobs tab."
                 }
             }
             val pm = getSystemService(android.os.PowerManager::class.java)
@@ -1695,9 +1906,11 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_IMPORT_DIR = 12
         private const val REQ_EXPORT_DIR = 13
         private const val REQ_BACKUP_DIR = 14
+        private const val REQ_SAVE_SPEC = 15
         private const val TAB_NEWJOB = 1
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3
         private const val TAB_SETTINGS = 4
+        private const val TAB_HOST = 5
     }
 }

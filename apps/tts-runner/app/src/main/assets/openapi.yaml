@@ -1,0 +1,172 @@
+openapi: 3.1.0
+info:
+  title: TTS Runner speech API
+  version: "1.0.0"
+  description: |
+    An OpenAI-compatible text-to-speech endpoint served by a phone. Point any
+    client that speaks to OpenAI's `/v1/audio/speech` at this base URL and pass
+    one of the phone's own speaker names as `voice`.
+
+    Generation is on-device: nothing leaves the phone, and it works with the
+    network off as long as the caller can reach it. One request is served at a
+    time — the engine takes over on each new request — so callers should not
+    fan out.
+
+    `response_format` differs from OpenAI's: Android ships no MP3, Opus or
+    FLAC encoder. `wav` and `pcm` come straight from the model, `aac` is AAC in
+    an MP4 container, and `mp3` is answered with that same AAC — labelled
+    `audio/mp4`, with an `X-Format` header saying so — rather than refused.
+
+    There is no authentication. Keep it on your own network.
+servers:
+  - url: "{{SERVER}}"
+    description: this phone
+paths:
+  /v1/audio/speech:
+    post:
+      operationId: createSpeech
+      summary: Generate spoken audio from text
+      tags: [audio]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+      responses:
+        "200":
+          description: The generated audio. `X-Sample-Rate` carries the model's rate.
+          content:
+            audio/wav:
+              schema: { type: string, format: binary }
+            audio/mp4:
+              schema: { type: string, format: binary }
+            audio/L16:
+              schema: { type: string, format: binary }
+        "400":
+          description: Empty input, unknown voice, or a format this phone cannot encode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The speech engine failed or produced nothing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: Models downloaded on this phone
+      tags: [models]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelList" }
+  /v1/audio/voices:
+    get:
+      operationId: listVoices
+      summary: Speakers usable with the selected model
+      description: |
+        Not an OpenAI route. The list follows the selected model: Supertonic
+        speaks style files, the Qwen models speak reference recordings.
+      tags: [audio]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VoiceList" }
+  /health:
+    get:
+      operationId: health
+      summary: Liveness, selected model and request count
+      tags: [meta]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  model: { type: string }
+                  requests: { type: integer }
+  /openapi.yaml:
+    get:
+      operationId: getSpec
+      summary: This document
+      tags: [meta]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/yaml:
+              schema: { type: string }
+  /:
+    get:
+      operationId: webUi
+      summary: A browser client for this API
+      tags: [meta]
+      responses:
+        "200":
+          description: A single HTML page that calls the endpoints above.
+          content:
+            text/html:
+              schema: { type: string }
+components:
+  schemas:
+    SpeechRequest:
+      type: object
+      required: [input]
+      properties:
+        model:
+          type: string
+          description: Accepted for compatibility. The phone speaks with whichever model is selected in its Settings.
+        input:
+          type: string
+          maxLength: 8000
+          description: The text to speak. It is chunked on sentence boundaries exactly as a job is.
+        voice:
+          type: string
+          description: A name from /v1/audio/voices. Omitted means the phone's default speaker.
+        response_format:
+          type: string
+          enum: [wav, pcm, aac, mp3]
+          default: wav
+          description: |
+            `pcm` is headerless signed 16-bit little-endian mono at the rate in
+            `X-Sample-Rate`. `mp3` returns AAC in MP4 — see the description above.
+        speed:
+          type: number
+          description: Accepted and ignored; the engine's rate is fixed per model.
+    ModelList:
+      type: object
+      properties:
+        object: { type: string, const: list }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              object: { type: string, const: model }
+              owned_by: { type: string }
+    VoiceList:
+      type: object
+      properties:
+        object: { type: string, const: list }
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              kind: { type: string, enum: [style, reference] }
+    Error:
+      type: object
+      properties:
+        error: { type: string }

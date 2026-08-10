@@ -32,6 +32,9 @@ class TtsService : Service() {
     companion object {
         const val ACTION_SPEAK = "com.maxfridbe.ttsrunner.SPEAK"
         const val ACTION_STOP = "com.maxfridbe.ttsrunner.STOP"
+        /** Live playback control: hold the audio without losing the job. */
+        const val ACTION_PAUSE = "com.maxfridbe.ttsrunner.PAUSE"
+        const val ACTION_RESUME = "com.maxfridbe.ttsrunner.RESUME"
         /** From ResumeReceiver: "are you alive?" — no-op while working, an
          *  auto-resume happens in onCreate when the process had to be spawned. */
         const val ACTION_NUDGE = "com.maxfridbe.ttsrunner.NUDGE"
@@ -66,6 +69,15 @@ class TtsService : Service() {
         const val EXTRA_INSTRUCT = "instruct" // voice description (VoiceDesign model)
         const val EXTRA_JOB_ID = "job_id"    // resume this job: keep its id and its cached chunks
         const val EXTRA_EPHEMERAL = "ephemeral"  // live Talk lines: speak, but keep out of job history
+        /** Absolute path to copy the finished WAV to. Talk keeps one file per
+         *  line this way, and the HTTP host collects its answer from it. */
+        const val EXTRA_OUT = "out"
+        /** Echoed back on the terminal broadcast, so a caller can tell its own
+         *  request apart from anyone else's. */
+        const val EXTRA_REQ = "req"
+        /** Generate without playing: the HTTP host wants the file, not a phone
+         *  that suddenly starts talking in someone's pocket. */
+        const val EXTRA_SILENT = "silent"
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -77,6 +89,12 @@ class TtsService : Service() {
      *  read it, so a mismatch would play everything at the wrong pitch. */
     @Volatile private var jobRate = SAMPLE_RATE
     @Volatile private var stopRequested = false
+    @Volatile private var paused = false
+    @Volatile private var silent = false
+    /** Where this request's finished WAV should be copied, and the id echoed
+     *  on the terminal broadcast. Both are per-request, set on the intent. */
+    @Volatile private var outPath: String? = null
+    @Volatile private var reqId = ""
     @Volatile private var working = false
     @Volatile private var bound = false
     private var workThread: Thread? = null
@@ -178,6 +196,11 @@ class TtsService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+            // Pausing holds the audio only. Generation keeps running, which is
+            // the point: by the time you press play again the next chunks are
+            // ready instead of starting from cold.
+            ACTION_PAUSE -> { paused = true; broadcast("paused", 0, 0, "") }
+            ACTION_RESUME -> { paused = false; broadcast("resumed", 0, 0, "") }
             ACTION_NUDGE -> {
                 // alive and working: satisfy the FGS contract and carry on.
                 // Spawned dead: onCreate already ran maybeAutoResume, which
@@ -203,6 +226,10 @@ class TtsService : Service() {
                 val resumeId = intent.getLongExtra(EXTRA_JOB_ID, 0L)
                 // Talk mode speaks without recording a job
                 val ephemeral = intent.getBooleanExtra(EXTRA_EPHEMERAL, false)
+                silent = intent.getBooleanExtra(EXTRA_SILENT, false)
+                outPath = intent.getStringExtra(EXTRA_OUT)
+                reqId = intent.getStringExtra(EXTRA_REQ) ?: ""
+                paused = false
                 startJob(text, title, voice, backend, save, preview || ephemeral, design, seed, instruct, resumeId)
                 // sticky: if this process is killed mid-save, Android restarts
                 // it and onCreate's auto-resume continues the job
@@ -404,7 +431,7 @@ class TtsService : Service() {
         jobStartMs = System.currentTimeMillis()
 
         val queue = LinkedBlockingQueue<ByteArray>(2)
-        val player = if (save) null else thread(name = "tts-play") { playLoop(queue) }
+        val player = if (save || silent) null else thread(name = "tts-play") { playLoop(queue) }
         val saver = if (!save) null else try {
             AudioSaver(this, title, jobRate)
         } catch (e: Exception) {
@@ -415,7 +442,7 @@ class TtsService : Service() {
         // (little cores only, ~10x slower) unless they are actively playing
         // audio — verified on a Fold5 by watching /proc/pid/cpuset flip. Save
         // mode has no playback, so keep a silent AudioTrack running.
-        val keepalive = if (save) startSilentKeepalive() else null
+        val keepalive = if (save || silent) startSilentKeepalive() else null
 
         // last-audio capture for the in-app player: raw PCM appended per chunk,
         // wrapped into a WAV when the job ends
@@ -476,7 +503,7 @@ class TtsService : Service() {
                     DebugLog.log(this, "TtsService", "saver.write failed", e)
                     failed = "Save failed: ${e.message}"; break
                 }
-            } else {
+            } else if (!silent) {
                 queue.put(bytes)
             }
         }
@@ -487,6 +514,14 @@ class TtsService : Service() {
         keepalive?.interrupt()
         DebugLog.log(this, "TtsService", "job end: stopped=$stopRequested failed=$failed")
         finalizeLastWav()
+        // a caller that asked for its own copy gets it before the terminal
+        // broadcast, so the file is there the moment it is told to look
+        outPath?.let { p ->
+            runCatching {
+                if (failed == null && audioSecs > 0)
+                    java.io.File(filesDir, "last_audio.wav").copyTo(java.io.File(p), overwrite = true)
+            }.onFailure { DebugLog.log(this, "TtsService", "copy to $p failed", it) }
+        }
 
         // stats summary: "25s audio · 3m 12s · RTF 7.6"
         val stats = if (audioSecs > 0)
@@ -808,6 +843,14 @@ class TtsService : Service() {
                 if (pcm.isEmpty()) break // EOS
                 var off = 0
                 while (off < pcm.size && !stopRequested) {
+                    // AudioTrack.write blocks until the buffer drains, so a
+                    // paused track would wedge here: stop feeding it instead
+                    if (paused) {
+                        runCatching { track.pause() }
+                        while (paused && !stopRequested) Thread.sleep(100)
+                        if (stopRequested) break
+                        runCatching { track.play() }
+                    }
                     val n = track.write(pcm, off, minOf(32768, pcm.size - off))
                     if (n <= 0) {
                         DebugLog.log(this, "TtsService", "AudioTrack.write returned $n (playState=${track.playState})")
@@ -861,7 +904,8 @@ class TtsService : Service() {
     private fun broadcast(state: String, chunk: Int, total: Int, message: String) {
         sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)
             .putExtra("state", state).putExtra("chunk", chunk)
-            .putExtra("total", total).putExtra("message", message))
+            .putExtra("total", total).putExtra("message", message)
+            .putExtra(EXTRA_REQ, reqId).putExtra(EXTRA_OUT, outPath ?: ""))
     }
 
     private fun startInForeground(n: Notification) {

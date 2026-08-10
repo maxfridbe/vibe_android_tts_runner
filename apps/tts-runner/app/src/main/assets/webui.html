@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS Runner</title>
+<style>
+  :root {
+    --bg: #12100e; --panel: #1c1815; --line: #322a23; --ink: #efe6d8;
+    --amber: #e8a33d; --faded: #9a8d7d; --green: #7fa86b; --red: #c4553f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; justify-content: center; padding: 1.5rem 1rem 4rem;
+  }
+  main { width: 100%; max-width: 44rem; }
+  h1 { font: 400 1.6rem Georgia, serif; margin: 0 0 .2rem; }
+  h1 em { color: var(--amber); font-style: normal; }
+  .sub { color: var(--faded); font-size: .9rem; margin: 0 0 1.4rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; margin-bottom: 1rem; }
+  label { display: block; font-size: .8rem; color: var(--faded); margin-bottom: .3rem; }
+  textarea, select, input {
+    width: 100%; background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px; padding: .6rem .7rem;
+    font: inherit;
+  }
+  textarea { min-height: 7rem; resize: vertical; }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; margin-top: .8rem; }
+  .row > * { flex: 1 1 12rem; }
+  button {
+    background: var(--amber); color: #1b1712; border: 0; border-radius: 5px;
+    padding: .65rem 1.2rem; font: 600 .95rem inherit; cursor: pointer; flex: 0 0 auto;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+  button:disabled { opacity: .5; cursor: wait; }
+  #status { min-height: 1.4rem; font-size: .88rem; color: var(--faded); margin-top: .7rem; }
+  #status.err { color: var(--red); }
+  #status.ok { color: var(--green); }
+  audio { width: 100%; margin-top: .8rem; }
+  .clips { list-style: none; padding: 0; margin: 0; }
+  .clips li { border-top: 1px solid var(--line); padding: .7rem 0; }
+  .clips .meta { display: flex; justify-content: space-between; gap: 1rem; font-size: .82rem; color: var(--faded); }
+  .clips p { margin: .2rem 0 .4rem; }
+  a { color: var(--amber); }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: .85em; color: var(--amber); }
+</style>
+</head>
+<body>
+<main>
+  <h1>TTS <em>Runner</em></h1>
+  <p class="sub">Speaking from the phone itself. Same endpoints as the API — this page just calls them.</p>
+
+  <div class="panel">
+    <label for="text">Text</label>
+    <textarea id="text" placeholder="Type something to hear it read.">Hello from a phone on your own network.</textarea>
+    <div class="row">
+      <div>
+        <label for="voice">Speaker</label>
+        <select id="voice"></select>
+      </div>
+      <div>
+        <label for="format">Format</label>
+        <select id="format">
+          <option value="wav">wav</option>
+          <option value="aac">aac (m4a)</option>
+          <option value="pcm">pcm</option>
+        </select>
+      </div>
+      <button id="speak">Speak</button>
+      <button id="download" class="ghost" disabled>Download</button>
+    </div>
+    <div id="status"></div>
+    <audio id="player" controls hidden></audio>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin:.1rem 0 .6rem;font:500 1rem Georgia,serif">This session</h3>
+    <ul class="clips" id="clips"></ul>
+    <p class="sub" id="empty" style="margin:.4rem 0 0">Nothing generated yet.</p>
+  </div>
+
+  <p class="sub">
+    API: <code>POST /v1/audio/speech</code> · <code>GET /v1/audio/voices</code> ·
+    <a href="/openapi.yaml" download>openapi.yaml</a>
+  </p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const status = (msg, kind) => { $("status").textContent = msg; $("status").className = kind || ""; };
+let lastUrl = null, lastName = "speech.wav";
+
+async function loadVoices() {
+  try {
+    const res = await fetch("/v1/audio/voices");
+    const { data } = await res.json();
+    $("voice").innerHTML = data.length
+      ? data.map((v) => `<option>${v.name}</option>`).join("")
+      : `<option value="">no speakers on the phone</option>`;
+    if (!data.length) status("The phone has no speakers for its selected model.", "err");
+  } catch (e) {
+    status("Could not reach the phone: " + e.message, "err");
+  }
+}
+
+function addClip(text, url, name, secs) {
+  $("empty").hidden = true;
+  const li = document.createElement("li");
+  li.innerHTML = `<div class="meta"><span>${$("voice").value || "voice"}</span><span>${secs}</span></div>
+                  <p></p><audio controls src="${url}"></audio>
+                  <div><a href="${url}" download="${name}">Download</a></div>`;
+  li.querySelector("p").textContent = text;
+  $("clips").prepend(li);
+}
+
+$("speak").onclick = async () => {
+  const input = $("text").value.trim();
+  if (!input) return status("Nothing to say.", "err");
+  const format = $("format").value;
+  $("speak").disabled = true;
+  status("Generating on the phone…");
+  const started = Date.now();
+  try {
+    const res = await fetch("/v1/audio/speech", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input, voice: $("voice").value, response_format: format }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || res.status);
+    const blob = await res.blob();
+    // raw pcm has no container, so give the browser a wav header to play it
+    const playable = format === "pcm"
+      ? wrapPcm(await blob.arrayBuffer(), Number(res.headers.get("x-sample-rate") || 24000))
+      : blob;
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = URL.createObjectURL(playable);
+    lastName = "speech." + (format === "aac" ? "m4a" : format === "pcm" ? "wav" : format);
+    const p = $("player");
+    p.hidden = false; p.src = lastUrl; p.play().catch(() => {});
+    $("download").disabled = false;
+    const took = ((Date.now() - started) / 1000).toFixed(1);
+    status(`Done in ${took}s.`, "ok");
+    addClip(input, lastUrl, lastName, took + "s");
+  } catch (e) {
+    status("Failed: " + e.message, "err");
+  } finally {
+    $("speak").disabled = false;
+  }
+};
+
+$("download").onclick = () => {
+  if (!lastUrl) return;
+  const a = document.createElement("a");
+  a.href = lastUrl; a.download = lastName; a.click();
+};
+
+function wrapPcm(buf, rate) {
+  const pcm = new Uint8Array(buf), out = new Uint8Array(44 + pcm.length);
+  const dv = new DataView(out.buffer);
+  const ascii = (off, s) => [...s].forEach((c, i) => out[off + i] = c.charCodeAt(0));
+  ascii(0, "RIFF"); dv.setUint32(4, 36 + pcm.length, true);
+  ascii(8, "WAVEfmt "); dv.setUint32(16, 16, true);
+  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  ascii(36, "data"); dv.setUint32(40, pcm.length, true);
+  out.set(pcm, 44);
+  return new Blob([out], { type: "audio/wav" });
+}
+
+loadVoices();
+</script>
+</body>
+</html>
