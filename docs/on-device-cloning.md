@@ -154,3 +154,40 @@ controls, which is exactly where a regressor is most likely to be bland.
   that caps how sharp the regressor can get. Averaging several inversions per
   speaker, or keeping only the best by held-out score, costs GPU time but
   buys label quality.
+
+## What the first trained encoder actually did
+
+Trained on 1200 style pairs and 1122 Qwen-designed speaker targets, k=64,
+20 000 steps on a 5070 (~340 ms/step). Judged the way this document asks —
+synthesise held-out sentences with the predicted style, embed them, compare
+against the reference:
+
+| | held-out ECAPA cosine |
+|---|---|
+| desktop inversion, 500 iters (Dale) | **0.820** |
+| learned encoder, real recording (Dale) | **0.223** |
+| learned encoder, Qwen-designed speakers | 0.319 / 0.238 / 0.539 |
+| random preset (floor) | 0.10–0.20 |
+
+Two things fall out of that.
+
+**The training metric was honest, the target set was not.** The trainer
+optimises exactly this quantity — through the frozen synthesiser, against an
+ECAPA embedding — and its held-out number (0.342) matches the in-domain
+measurements (mean 0.37). It is not overfitting or mis-measuring. It is
+faithfully learning to hit *Qwen-designed* speakers, and a real human
+recording lands at 0.22. The domain gap was the whole game, exactly as the
+risks section said.
+
+**It plateaued, so more steps are not the answer.** The best checkpoint is
+from step 15 250; the sixteen validations after it average 0.320 and never
+beat it. k=128 trailed k=64 throughout (0.318 vs 0.342), so capacity is not
+the binding constraint either.
+
+Next, in order of expected return: real speech in the target bank
+(VCTK/LibriSpeech embeddings rather than only Qwen rolls), then varying the
+probe sentence per step instead of repeating one across the batch, then the
+label-quality measures above. Until one of those moves the real-recording
+number well past 0.5, the encoder is a demonstration rather than a feature —
+which is why it side-loads into `filesDir/cloner/` instead of shipping in the
+APK.
