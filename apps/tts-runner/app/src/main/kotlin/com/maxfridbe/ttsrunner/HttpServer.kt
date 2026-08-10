@@ -19,12 +19,16 @@ import java.util.concurrent.Executors
  *  network. Connections are handled one request each and closed, which is
  *  plenty for a phone serving a handful of clients on a home network.
  *
+ *  Several callers can be in flight at once; the engine service queues their
+ *  work and serves it in order, so a second request waits rather than cutting
+ *  the first one off.
+ *
  *  There is no authentication. It binds to every interface because the point
  *  is reaching it from a laptop, and the tab says so. */
 class HttpServer(private val ctx: Context, val port: Int) {
 
     @Volatile private var socket: ServerSocket? = null
-    private val pool = Executors.newFixedThreadPool(4)
+    private val pool = Executors.newFixedThreadPool(8)
     @Volatile var requests = 0; private set
     @Volatile var lastError: String? = null
 

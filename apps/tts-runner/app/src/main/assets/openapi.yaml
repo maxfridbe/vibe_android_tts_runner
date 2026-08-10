@@ -8,9 +8,10 @@ info:
     one of the phone's own speaker names as `voice`.
 
     Generation is on-device: nothing leaves the phone, and it works with the
-    network off as long as the caller can reach it. One request is served at a
-    time — the engine takes over on each new request — so callers should not
-    fan out.
+    network off as long as the caller can reach it. Requests may arrive
+    concurrently; each becomes a job in the phone's queue and they are
+    generated in order, because one model is loaded at a time. A caller simply
+    waits longer when others are ahead of it.
 
     `response_format` differs from OpenAI's: Android ships no MP3, Opus or
     FLAC encoder. `wav` and `pcm` come straight from the model, `aac` is AAC in

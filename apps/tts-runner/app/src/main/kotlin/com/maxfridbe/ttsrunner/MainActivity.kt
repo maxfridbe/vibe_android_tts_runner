@@ -1708,12 +1708,13 @@ class MainActivity : AppCompatActivity() {
 
         col.addView(card {
             addView(TextView(context).apply {
-                text = "One request at a time"; textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+                text = "How requests are handled"; textSize = 15f; setTypeface(typeface, Typeface.BOLD)
             })
             addView(TextView(context).apply {
-                text = "The engine takes over on each new request, so callers are served in turn " +
-                    "rather than in parallel — a second request would cut the first one off. " +
-                    "There is no authentication, so keep this to networks you trust."
+                text = "Callers can arrive together: each request becomes a job in the queue and " +
+                    "they are generated in order, since there is one model loaded. Each shows up " +
+                    "in Jobs while it runs and disappears when it is delivered; a failed one stays " +
+                    "so you can see why. There is no authentication, so keep this to networks you trust."
                 textSize = 13f; alpha = 0.75f
             })
         })

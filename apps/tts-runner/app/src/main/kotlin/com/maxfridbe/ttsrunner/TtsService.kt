@@ -78,6 +78,14 @@ class TtsService : Service() {
         /** Generate without playing: the HTTP host wants the file, not a phone
          *  that suddenly starts talking in someone's pocket. */
         const val EXTRA_SILENT = "silent"
+        /** Wait your turn instead of taking over. Interactive requests preempt
+         *  on purpose — a new share should replace the playback you are
+         *  hearing — but callers that only want their audio should queue. */
+        const val EXTRA_QUEUE = "queue"
+        /** Drop the job record once it succeeds. API calls are worth watching
+         *  while they run and worth keeping when they fail; a successful one
+         *  is just a response that already went back to the caller. */
+        const val EXTRA_TRANSIENT = "transient"
         private const val CHANNEL = "tts"
         private const val NOTIF_ID = 1
         private const val IDLE_TIMEOUT_MS = 5 * 60_000L
@@ -91,6 +99,18 @@ class TtsService : Service() {
     @Volatile private var stopRequested = false
     @Volatile private var paused = false
     @Volatile private var silent = false
+    @Volatile private var transientJob = false
+
+    /** Requests waiting their turn. One engine, one model, one generation at a
+     *  time — but "at a time" should mean a queue, not a fight. */
+    private class Pending(
+        val text: String, val title: String, val voice: String, val backend: String,
+        val save: Boolean, val preview: Boolean, val design: Boolean, val seed: Int,
+        val instruct: String, val silent: Boolean, val outPath: String?,
+        val reqId: String, val transient: Boolean)
+
+    private val queued = LinkedBlockingQueue<Pending>()
+    @Volatile private var drainer: Thread? = null
     /** Where this request's finished WAV should be copied, and the id echoed
      *  on the terminal broadcast. Both are per-request, set on the intent. */
     @Volatile private var outPath: String? = null
@@ -230,6 +250,17 @@ class TtsService : Service() {
                 outPath = intent.getStringExtra(EXTRA_OUT)
                 reqId = intent.getStringExtra(EXTRA_REQ) ?: ""
                 paused = false
+                if (intent.getBooleanExtra(EXTRA_QUEUE, false)) {
+                    queued.put(Pending(text, title, voice, backend, save, preview || ephemeral,
+                        design, seed, instruct,
+                        intent.getBooleanExtra(EXTRA_SILENT, false),
+                        intent.getStringExtra(EXTRA_OUT), intent.getStringExtra(EXTRA_REQ) ?: "",
+                        intent.getBooleanExtra(EXTRA_TRANSIENT, false)))
+                    startInForeground(notif(title, "Queued (${queued.size} waiting)", 0, 0))
+                    startDrainer()
+                    return START_NOT_STICKY
+                }
+                transientJob = intent.getBooleanExtra(EXTRA_TRANSIENT, false)
                 startJob(text, title, voice, backend, save, preview || ephemeral, design, seed, instruct, resumeId)
                 // sticky: if this process is killed mid-save, Android restarts
                 // it and onCreate's auto-resume continues the job
@@ -237,6 +268,58 @@ class TtsService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    /** Serves the queue in order until it empties. Each item waits for
+     *  whatever is already generating — including an interactive job that
+     *  preempted us — so nothing runs two generations on one context. */
+    private fun startDrainer() {
+        synchronized(jobLock) {
+            if (drainer?.isAlive == true) return
+            idleHandler.removeCallbacks(idleRunnable)
+            working = true
+            wakeLock?.release()
+            wakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ttsrunner:queue")
+                .apply { acquire(60 * 60_000L) }
+            drainer = thread(name = "tts-queue") {
+                try {
+                    while (true) {
+                        val p = queued.poll() ?: break
+                        runCatching { workThread?.join() }   // let an interactive job finish
+                        runQueued(p)
+                    }
+                } finally {
+                    synchronized(jobLock) {
+                        if (queued.isEmpty() && workThread?.isAlive != true) {
+                            working = false
+                            wakeLock?.release(); wakeLock = null
+                            idleHandler.postDelayed(idleRunnable, IDLE_TIMEOUT_MS)
+                            stopForeground(STOP_FOREGROUND_DETACH)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun runQueued(p: Pending) {
+        stopRequested = false
+        TtsEngine.nResetCancel()
+        silent = p.silent
+        outPath = p.outPath
+        reqId = p.reqId
+        transientJob = p.transient
+        update(notif(p.title, "Generating…", 0, 0))
+        try {
+            runJob(p.text, p.title, p.voice, p.backend, p.save, p.preview, p.design,
+                p.seed, p.instruct)
+        } catch (t: Throwable) {
+            DebugLog.log(this, "TtsService", "queued job crashed", t)
+            fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
+        } finally {
+            java.io.File(filesDir, "job-inflight").delete()
+        }
     }
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean,
@@ -587,6 +670,12 @@ class TtsService : Service() {
             it.output = output
             it.outputUri = outputUri
             it.error = failed ?: ""
+        }
+        // a served API request leaves no trace; a failed one stays, because
+        // that is the one worth looking at (and resuming)
+        if (transientJob && !stopped && failed == null) {
+            JobStore.delete(this, jobId)
+            JobStore.jobDir(this, jobId).deleteRecursively()
         }
     }
 

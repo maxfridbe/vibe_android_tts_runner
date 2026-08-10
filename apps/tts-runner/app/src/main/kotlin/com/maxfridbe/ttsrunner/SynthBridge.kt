@@ -13,17 +13,18 @@ import java.util.concurrent.TimeUnit
  *  The engine lives in another process behind a foreground service that
  *  reports progress by broadcast, so "give me a WAV for this text" means: fire
  *  the intent with an output path and a request id, wait for the terminal
- *  broadcast carrying that id, then read the file. One request at a time,
- *  because the service itself takes over on a new request and would cut the
- *  previous one off mid-sentence. */
+ *  broadcast carrying that id, then read the file.
+ *
+ *  Requests are queued by the service rather than serialised here: several
+ *  callers can be waiting at once, each on its own request id, and they are
+ *  served in the order they arrived. There is still one generation at a time —
+ *  one model, one context — but that is a queue, not a limit on callers. */
 object SynthBridge {
-
-    private val lock = Object()
 
     class Result(val wav: File?, val error: String?)
 
-    fun synth(ctx: Context, text: String, voice: String, timeoutSecs: Long = 600): Result {
-        synchronized(lock) {
+    fun synth(ctx: Context, text: String, voice: String, timeoutSecs: Long = 900): Result {
+        run {
             val id = "http-" + System.nanoTime()
             val out = File(ctx.cacheDir, "http").apply { mkdirs() }.let { File(it, "$id.wav") }
             val latch = CountDownLatch(1)
@@ -47,7 +48,10 @@ object SynthBridge {
                     .putExtra(TtsService.EXTRA_TITLE, "API request")
                     .putExtra(TtsService.EXTRA_VOICE, voice)
                     .putExtra(TtsService.EXTRA_BACKEND, Backends.current(ctx))
-                    .putExtra(TtsService.EXTRA_EPHEMERAL, true)
+                    // a real job while it runs, so it is visible and resumable,
+                    // and removed the moment it succeeds
+                    .putExtra(TtsService.EXTRA_QUEUE, true)
+                    .putExtra(TtsService.EXTRA_TRANSIENT, true)
                     .putExtra(TtsService.EXTRA_SILENT, true)
                     .putExtra(TtsService.EXTRA_OUT, out.absolutePath)
                     .putExtra(TtsService.EXTRA_REQ, id)
