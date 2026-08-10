@@ -14,3 +14,6 @@ keystore/
 
 # CMake/NDK intermediates (bind-mounted build tree)
 **/.cxx/
+
+# Python bytecode from the tooling scripts
+__pycache__/
