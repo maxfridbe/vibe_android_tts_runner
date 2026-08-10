@@ -36,22 +36,26 @@ import kotlin.concurrent.thread
  *  about a second, where the 1.7B model would take half a minute.
  *
  *  The transcript is a timeline, not a log: every line keeps the voice that
- *  said it and its own audio file, lines can be inserted between existing ones
- *  (long press), and the whole thing replays or exports as one track. Lines
- *  are spoken through the same engine service, so the model stays warm, but
- *  marked ephemeral so a chat never lands in the job history. */
+ *  said it and its own audio file, lines are dragged into the order you want
+ *  (long press and move), and the whole thing replays or exports as one track
+ *  in that order. Lines are spoken through the same engine service, so the
+ *  model stays warm, but marked ephemeral so a chat never lands in the job
+ *  history. */
 class TalkActivity : AppCompatActivity() {
 
-    /** One turn of the conversation. [audio] arrives when the engine finishes. */
-    private class Line(var text: String, var voice: String) {
+    /** One turn of the conversation. [audio] arrives when the engine finishes.
+     *  [fast] records which engine spoke it: a Supertonic style answers in
+     *  about a second, a Qwen reference voice takes tens of them, and that is
+     *  the single most useful thing to know about a speaker before you pick it. */
+    private class Line(var text: String, var voice: String, val fast: Boolean) {
         var audio: File? = null
         var secs: Double = 0.0
         var speaking = false
     }
 
     private val lines = mutableListOf<Line>()
-    private lateinit var transcript: LinearLayout
-    private lateinit var scroll: ScrollView
+    private lateinit var list: androidx.recyclerview.widget.RecyclerView
+    private lateinit var adapter: LineAdapter
     private lateinit var input: EditText
     private lateinit var status: TextView
     private lateinit var totals: TextView
@@ -146,9 +150,16 @@ class TalkActivity : AppCompatActivity() {
         totals = TextView(this).apply { textSize = 12f; alpha = 0.7f; setPadding(0, 0, 0, dp(8)) }
         col.addView(totals)
 
-        transcript = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll = ScrollView(this).apply { addView(transcript) }
-        col.addView(scroll, LinearLayout.LayoutParams(
+        adapter = LineAdapter()
+        list = androidx.recyclerview.widget.RecyclerView(this).apply {
+            layoutManager = androidx.recyclerview.widget.LinearLayoutManager(this@TalkActivity)
+            this.adapter = this@TalkActivity.adapter
+            // dragging past the edge should carry on scrolling, which is the
+            // whole point of moving a line several places
+            isNestedScrollingEnabled = true
+        }
+        dragger.attachToRecyclerView(list)
+        col.addView(list, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         // Supertonic reads bracketed expression tags inline, so a row of one-tap
@@ -207,22 +218,34 @@ class TalkActivity : AppCompatActivity() {
         render()
     }
 
+    private fun supertonicSelected() = ModelManager.selectedModel(this)?.engine == "supertonic"
+
+    /** Speakers the loaded model can actually use. */
+    private fun voicesForModel(): List<String> =
+        if (supertonicSelected()) VoiceStore.styleList(this).map { it.name }
+        else VoiceStore.list(this).map { it.name }
+
     private fun setupVoices(preferred: String?) {
-        val names = VoiceStore.styleList(this).map { it.name }
+        val fast = supertonicSelected()
+        val names = voicesForModel()
         if (names.isEmpty()) {
             Toast.makeText(this, "No style voice — download Supertonic in Settings", Toast.LENGTH_LONG).show()
             return
         }
         voice = preferred?.takeIf { it in names }
-            ?: VoiceStore.defaultFor(this, true)?.name?.takeIf { it in names }
+            ?: VoiceStore.defaultFor(this, fast)?.name?.takeIf { it in names }
             ?: names.first()
-        val labels = names.map { "${VoiceStore.icon(this, it)}  $it" }
+        // ⚡ answers in about a second, 🐢 takes tens of them — the one thing
+        // worth knowing before choosing who speaks next
+        val labels = names.map { "${if (fast) "⚡" else "🐢"} ${VoiceStore.icon(this, it)}  $it" }
         voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         voiceSpinner.setSelection(names.indexOf(voice).coerceAtLeast(0))
         voiceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 voice = names.getOrNull(pos)
-                voice?.let { VoiceStore.setDefaultFor(this@TalkActivity, VoiceStore.Voice(it, File("")), true) }
+                voice?.let {
+                    VoiceStore.setDefaultFor(this@TalkActivity, VoiceStore.Voice(it, File("")), fast)
+                }
             }
             override fun onNothingSelected(p: AdapterView<*>?) {}
         }
@@ -258,16 +281,17 @@ class TalkActivity : AppCompatActivity() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
         input.setText("")
-        add(text, lines.size)
+        add(text)
     }
 
-    /** Adds a line at [at] and queues it. Inserting in the middle is what makes
-     *  the transcript a timeline you can go back and fill in. */
-    private fun add(text: String, at: Int) {
-        val v = voice ?: VoiceStore.styleList(this).firstOrNull()?.name ?: return
-        val line = Line(text, v)
-        lines.add(at.coerceIn(0, lines.size), line)
+    /** Adds a line at the end and queues it. Order is a separate act: say it,
+     *  then drag it where it belongs. */
+    private fun add(text: String) {
+        val v = voice ?: voicesForModel().firstOrNull() ?: return
+        val line = Line(text, v, fast = supertonicSelected())
+        lines.add(line)
         render()
+        list.post { list.scrollToPosition(lines.size - 1) }
         queue.addLast(line)
         pump()
     }
@@ -300,87 +324,136 @@ class TalkActivity : AppCompatActivity() {
     // ---- the transcript ----------------------------------------------------
 
     private fun render() {
-        transcript.removeAllViews()
-        for ((i, line) in lines.withIndex()) transcript.addView(bubble(i, line))
+        adapter.notifyDataSetChanged()
         val secs = lines.sumOf { it.secs }
         val pending = lines.count { it.audio == null }
         totals.text = when {
-            lines.isEmpty() -> "nothing said yet"
+            lines.isEmpty() -> "nothing said yet · hold a line to drag it"
             else -> "${lines.size} line${if (lines.size == 1) "" else "s"} · ${Wav.fmt(secs)}" +
                 if (pending > 0) " · $pending still generating" else ""
         }
-        scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
-    /** A bubble carries its speaker, because a conversation with one label per
-     *  line is the difference between a chat and a wall of text. */
-    private fun bubble(index: Int, line: Line): View {
-        val card = MaterialCardView(this).apply {
-            radius = dp(16).toFloat(); cardElevation = 0f; strokeWidth = 1
-            setCardBackgroundColor(themeColor(
-                if (index % 2 == 0) com.google.android.material.R.attr.colorSecondaryContainer
-                else com.google.android.material.R.attr.colorTertiaryContainer))
-            isClickable = true
-            setOnClickListener { lineMenu(this, index) }
-            setOnLongClickListener { insertDialog(index); true }
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
-        }
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(10), dp(10))
-        }
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        }
-        top.addView(TextView(this).apply {
-            text = "${VoiceStore.icon(this@TalkActivity, line.voice)}  ${line.voice}"
+    /** Long press and move. Reordering is how a chat becomes a script: say the
+     *  lines in any order, then put them where they belong — the audio travels
+     *  with the line, so replay and export follow the new order without
+     *  regenerating anything. */
+    private val dragger = androidx.recyclerview.widget.ItemTouchHelper(
+        object : androidx.recyclerview.widget.ItemTouchHelper.SimpleCallback(
+            androidx.recyclerview.widget.ItemTouchHelper.UP or
+                androidx.recyclerview.widget.ItemTouchHelper.DOWN, 0) {
+
+            override fun onMove(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                from: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+                to: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ): Boolean {
+                val a = from.adapterPosition
+                val b = to.adapterPosition
+                if (a !in lines.indices || b !in lines.indices) return false
+                lines.add(b, lines.removeAt(a))
+                adapter.notifyItemMoved(a, b)
+                return true
+            }
+
+            override fun onSwiped(vh: androidx.recyclerview.widget.RecyclerView.ViewHolder, dir: Int) {}
+
+            override fun isLongPressDragEnabled() = true
+
+            // lift the card while it travels, so it reads as picked up
+            override fun onSelectedChanged(
+                vh: androidx.recyclerview.widget.RecyclerView.ViewHolder?, state: Int,
+            ) {
+                super.onSelectedChanged(vh, state)
+                if (state == androidx.recyclerview.widget.ItemTouchHelper.ACTION_STATE_DRAG) {
+                    (vh?.itemView as? MaterialCardView)?.cardElevation = dp(8).toFloat()
+                }
+            }
+
+            override fun clearView(
+                rv: androidx.recyclerview.widget.RecyclerView,
+                vh: androidx.recyclerview.widget.RecyclerView.ViewHolder,
+            ) {
+                super.clearView(rv, vh)
+                (vh.itemView as? MaterialCardView)?.cardElevation = 0f
+                // positions changed, so the numbering in the menus follows
+                adapter.notifyDataSetChanged()
+            }
+        })
+
+    private inner class Holder(val card: MaterialCardView) :
+        androidx.recyclerview.widget.RecyclerView.ViewHolder(card) {
+        val who: TextView = TextView(this@TalkActivity).apply {
             textSize = 12f; alpha = 0.8f; setTypeface(typeface, Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        top.addView(TextView(this).apply {
-            text = when {
+        }
+        val meta: TextView = TextView(this@TalkActivity).apply { textSize = 11f; alpha = 0.6f }
+        val play: ImageButton = ImageButton(this@TalkActivity).apply {
+            setImageResource(R.drawable.ic_play)
+            contentDescription = "Play this line"
+            background = null
+            minimumWidth = dp(36)
+            setPadding(dp(8), dp(4), dp(4), dp(4))
+        }
+        val body: TextView = TextView(this@TalkActivity).apply {
+            textSize = 16f
+            setPadding(0, dp(4), 0, 0)
+        }
+
+        init {
+            val colum = LinearLayout(this@TalkActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(10), dp(10), dp(10))
+            }
+            val top = LinearLayout(this@TalkActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            top.addView(who, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            top.addView(meta)
+            top.addView(play)
+            // the handle is the affordance; the whole card drags on long press
+            top.addView(TextView(this@TalkActivity).apply {
+                text = "≡"; textSize = 16f; alpha = 0.45f
+                setPadding(dp(6), 0, dp(2), 0)
+            })
+            colum.addView(top)
+            colum.addView(body)
+            card.addView(colum)
+        }
+    }
+
+    private inner class LineAdapter :
+        androidx.recyclerview.widget.RecyclerView.Adapter<Holder>() {
+
+        override fun getItemCount() = lines.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+            val card = MaterialCardView(this@TalkActivity).apply {
+                radius = dp(16).toFloat(); cardElevation = 0f; strokeWidth = 1
+                isClickable = true
+                layoutParams = androidx.recyclerview.widget.RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(8) }
+            }
+            return Holder(card)
+        }
+
+        override fun onBindViewHolder(h: Holder, position: Int) {
+            val line = lines[position]
+            h.card.setCardBackgroundColor(themeColor(
+                if (position % 2 == 0) com.google.android.material.R.attr.colorSecondaryContainer
+                else com.google.android.material.R.attr.colorTertiaryContainer))
+            h.who.text = "${if (line.fast) "⚡" else "🐢"} " +
+                "${VoiceStore.icon(this@TalkActivity, line.voice)}  ${line.voice}"
+            h.meta.text = when {
                 line.speaking -> "speaking…"
                 line.audio != null -> Wav.fmt(line.secs)
                 else -> "queued"
             }
-            textSize = 11f; alpha = 0.6f
-        })
-        if (line.audio != null) {
-            top.addView(ImageButton(this).apply {
-                setImageResource(R.drawable.ic_play)
-                contentDescription = "Play this line"
-                background = null
-                minimumWidth = dp(36)
-                setPadding(dp(8), dp(4), dp(4), dp(4))
-                setOnClickListener { playFiles(listOf(line.audio!!)) }
-            })
+            h.body.text = line.text
+            h.play.visibility = if (line.audio != null) View.VISIBLE else View.GONE
+            h.play.setOnClickListener { line.audio?.let { f -> playFiles(listOf(f)) } }
+            h.card.setOnClickListener { lineMenu(h.card, h.adapterPosition) }
         }
-        col.addView(top)
-        col.addView(TextView(this).apply {
-            text = line.text
-            textSize = 16f
-            setPadding(0, dp(4), 0, 0)
-        })
-        card.addView(col)
-        return card
-    }
-
-    private fun insertDialog(index: Int) {
-        val edit = EditText(this).apply {
-            hint = "Line to insert above"
-            setPadding(dp(20), dp(12), dp(20), dp(12))
-        }
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Insert before line ${index + 1}")
-            .setMessage("Spoken as ${voice ?: "the current speaker"} and placed above this one.")
-            .setView(edit)
-            .setPositiveButton("Insert") { _, _ ->
-                val t = edit.text.toString().trim()
-                if (t.isNotEmpty()) add(t, index)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
     }
 
     // ---- playback ----------------------------------------------------------
@@ -487,7 +560,6 @@ class TalkActivity : AppCompatActivity() {
         PopupMenu(this, anchor).apply {
             menu.add("Play")
             menu.add("Say again")
-            menu.add("Insert a line above")
             menu.add("Copy text")
             menu.add("Share text")
             menu.add("Save text")
@@ -498,7 +570,6 @@ class TalkActivity : AppCompatActivity() {
                 when (it.title) {
                     "Play" -> line.audio?.let { f -> playFiles(listOf(f)) } ?: toast("Not generated yet")
                     "Say again" -> { queue.addLast(line); line.speaking = true; render(); pump() }
-                    "Insert a line above" -> insertDialog(index)
                     "Copy text" -> copy(line.text, "Line")
                     "Share text" -> shareText(line.text)
                     "Save text" -> saveTextToFile("line.txt", line.text)

@@ -688,8 +688,9 @@ class MainActivity : AppCompatActivity() {
     private fun buildVoicesTab(): View {
         val (scroll, col) = page()
         col.title("Speakers")
-        col.caption("Two kinds live here: Supertonic style files, and reference recordings for the " +
-            "Qwen models. Each section holds the speakers one model can use.")
+        col.caption("Two kinds live here: Supertonic style files (⚡ about a second a sentence) and " +
+            "reference recordings for the Qwen models (🐢 tens of seconds). Each section holds the " +
+            "speakers one model can use.")
         val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         topRow.addView(Button(this).apply {
             text = "Record"
@@ -845,7 +846,7 @@ class MainActivity : AppCompatActivity() {
         val styleVoices = VoiceStore.styleList(this)
         val styleDef = VoiceStore.defaultFor(this, true)
 
-        section("styles", "Supertonic 3 speakers", "style files · instant, works offline",
+        section("styles", "⚡ Supertonic 3 speakers", "style files · about a second a sentence",
                 styleVoices.size, defaultOpen = supertonicModel) {
             if (styleVoices.isEmpty()) {
                 addView(TextView(context).apply {
@@ -866,8 +867,12 @@ class MainActivity : AppCompatActivity() {
                         }
                     })
                     row.addView(TextView(context).apply {
+                        text = "⚡"; textSize = 11f
+                        setPadding(dp(2), 0, dp(2), 0)
+                    })
+                    row.addView(TextView(context).apply {
                         text = VoiceStore.icon(this@MainActivity, v.name)
-                        textSize = 20f; setPadding(dp(2), 0, dp(8), 0)
+                        textSize = 20f; setPadding(0, 0, dp(8), 0)
                     })
                     row.addView(TextView(context).apply {
                         text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
@@ -890,7 +895,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val refVoices = VoiceStore.list(this)
-        section("refs", "Qwen speakers", "reference recordings · cloned as you generate",
+        section("refs", "🐢 Qwen speakers", "reference recordings · tens of seconds a sentence",
                 refVoices.size, defaultOpen = !supertonicModel) {
         if (refVoices.isEmpty()) {
             addView(TextView(context).apply {
@@ -909,9 +914,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
                 head.addView(TextView(context).apply {
+                    text = "🐢"; textSize = 11f
+                    setPadding(dp(2), 0, dp(2), 0)
+                })
+                head.addView(TextView(context).apply {
                     text = VoiceStore.icon(this@MainActivity, v.name)
                     textSize = 20f
-                    setPadding(dp(2), 0, dp(8), 0)
+                    setPadding(0, 0, dp(8), 0)
                 })
                 head.addView(TextView(context).apply {
                     text = v.name; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
