@@ -1866,12 +1866,25 @@ class MainActivity : AppCompatActivity() {
             addView(modelProgress)
             modelBtn = Button(context).apply { setOnClickListener { onModelButton() } }
             addView(modelBtn)
+            // checked BEFORE the listener attaches: the initial programmatic
+            // check used to arrive through refreshModelUi with the listener
+            // live, whose rebuild re-entered the build, whose refresh checked
+            // again — a loop that leaked a view tree per lap until the heap
+            // died (36k views, OOM in RadioGroup.check on an S24 FE)
+            val selNow = ModelManager.selectedModel(this@MainActivity)
+            modelGroup.check(ModelManager.CATALOG.indexOfFirst { it.id == selNow?.id }
+                .takeIf { it >= 0 } ?: 0)
             modelGroup.setOnCheckedChangeListener { _, id ->
+                val engineBefore = ModelManager.selectedModel(this@MainActivity)?.engine
                 ModelManager.CATALOG.getOrNull(id)?.let { ModelManager.selectModel(this@MainActivity, it.id) }
                 refreshModelUi()
                 // the Engine card below belongs to the model: rebuild the tab so
-                // it stops offering llama.cpp backends to Supertonic and back
-                ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
+                // it stops offering llama.cpp backends to Supertonic and back —
+                // but only when the engine actually flips, so a re-check of the
+                // same model can never cycle the build
+                if (ModelManager.selectedModel(this@MainActivity)?.engine != engineBefore) {
+                    ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
+                }
             }
         })
 
@@ -1900,16 +1913,37 @@ class MainActivity : AppCompatActivity() {
             backendGroup.setOnCheckedChangeListener { _, id ->
                 options.getOrNull(id - 100)?.let { Backends.set(this@MainActivity, engine, it.id) }
             }
-            thread {
-                val info = runCatching { TtsEngine.nDeviceInfo() }.getOrDefault("")
-                val (rec, why) = Backends.recommend(engine, info, model?.gpuCapable ?: false)
-                val gpuName = Backends.gpuName(info)
-                runOnUiThread {
-                    val idx = options.indexOfFirst { it.id == rec }
-                    if (idx >= 0) buttons[idx].text = "${buttons[idx].text}  ★ recommended"
-                    detectNote.text = "Detected GPU: $gpuName. Recommended here because $why. " +
-                        "Your choice is kept: a job that fails on one engine can be resumed on " +
-                        "another from the Jobs tab."
+            var starred = -1
+            fun star(rec: String) {
+                if (starred >= 0) return
+                val idx = options.indexOfFirst { it.id == rec }
+                if (idx >= 0) { buttons[idx].text = "${buttons[idx].text}  ★ recommended"; starred = idx }
+            }
+            DeviceProbe.probe(this@MainActivity) { info ->
+                if (info == null) {
+                    // skipped or timed out — the driver on some phones (S24 FE
+                    // Xclipse) hangs or dies inside the probe, so CPU is starred
+                    // without it and the note says why
+                    star("cpu")
+                    detectNote.text = if (DeviceProbe.crashedBefore(this@MainActivity))
+                        "GPU detection is off: a previous attempt crashed this phone's " +
+                        "graphics driver. CPU is the safe default. Tap here to try again."
+                    else
+                        "GPU detection is slow on this phone — continuing without it; " +
+                        "CPU is the safe default. The result appears here if it finishes."
+                    detectNote.setOnClickListener {
+                        DeviceProbe.retry(this@MainActivity)
+                        detectNote.text = "Detecting GPU…"
+                        detectNote.setOnClickListener(null)
+                        ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
+                    }
+                } else {
+                    val (rec, why) = Backends.recommend(engine, info, model?.gpuCapable ?: false)
+                    star(rec)
+                    detectNote.setOnClickListener(null)
+                    detectNote.text = "Detected GPU: ${Backends.gpuName(info)}. Recommended here " +
+                        "because $why. Your choice is kept: a job that fails on one engine can " +
+                        "be resumed on another from the Jobs tab."
                 }
             }
             val pm = getSystemService(android.os.PowerManager::class.java)
@@ -1985,9 +2019,11 @@ class MainActivity : AppCompatActivity() {
                 addView(Button(context).apply {
                     text = "Status"
                     setOnClickListener {
-                        thread {
-                            val s = runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "device query failed: $it" }
-                            runOnUiThread { statusText.text = s }
+                        // explicit user action, so the crash guard is lifted first
+                        DeviceProbe.retry(this@MainActivity)
+                        statusText.text = "probing…"
+                        DeviceProbe.probe(this@MainActivity) { s ->
+                            statusText.text = s ?: "device probe hung or died — see logcat"
                         }
                     }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))

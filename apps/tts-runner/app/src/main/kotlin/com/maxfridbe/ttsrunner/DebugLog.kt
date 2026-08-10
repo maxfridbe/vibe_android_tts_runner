@@ -70,12 +70,10 @@ object DebugLog {
             sb.appendLine("cpuinfo unreadable: $e")
         }
 
-        try {
-            sb.appendLine("--- ggml devices ---")
-            sb.append(TtsEngine.nDeviceInfo())
-        } catch (t: Throwable) {
-            sb.appendLine("nDeviceInfo failed: $t")
-        }
+        sb.appendLine("--- ggml devices ---")
+        // cache only: a debug report must never poke the GPU driver itself
+        sb.appendLine(DeviceProbe.cached(ctx) ?: "not probed on this OS build" +
+            if (DeviceProbe.crashedBefore(ctx)) " (a previous probe crashed)" else "")
 
         sb.appendLine("--- models dir ---")
         ModelManager.modelsDir(ctx).listFiles()?.forEach { sb.appendLine("${it.name} ${it.length()} bytes") }

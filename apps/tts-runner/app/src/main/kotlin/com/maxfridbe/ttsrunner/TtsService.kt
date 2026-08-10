@@ -879,7 +879,9 @@ class TtsService : Service() {
         supertonic?.close(); supertonic = null
         TtsEngine.nUnload()
         broadcast("loading", 0, 0, model.label)
-        DebugLog.log(this, "TtsService", "devices:\n${runCatching { TtsEngine.nDeviceInfo() }.getOrElse { "$it" }}")
+        // cached only — nDeviceInfo inits every GPU backend, and on a CPU run
+        // there is no reason to poke a driver that froze the S24 FE's screen
+        DebugLog.log(this, "TtsService", "devices:\n${DeviceProbe.cached(this) ?: "(not probed)"}")
         val threads = bigCoreCount()
         val t0 = System.currentTimeMillis()
         val ok = TtsEngine.nLoad(
