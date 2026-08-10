@@ -43,9 +43,13 @@ predicted style, embed them, compare to the original recording:
 | this encoder, Qwen-designed speakers | 0.319 / 0.238 / 0.539 |
 | random preset (floor) | 0.10–0.20 |
 
-So: a voice in roughly the right family, not the person. The gap is the target
-set — everything it learned from was synthesised by another TTS model — and
-`docs/on-device-cloning.md` has the full reasoning and what to try next.
+So: a voice in roughly the right family, not the person. The gap turned out to
+be the PCA basis, not the target set: projecting a 0.82-cosine desktop
+inversion onto this checkpoint's basis destroys it down to 0.225 — the same
+number the encoder scores. Later encoders trained with inverted real-speaker
+styles folded into the basis roughly double the unseen-speaker score;
+`docs/on-device-cloning.md` ("What the second night found") has the
+measurements and the path to a shippable replacement for this checkpoint.
 
 ## Reproducing
 

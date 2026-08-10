@@ -191,3 +191,50 @@ label-quality measures above. Until one of those moves the real-recording
 number well past 0.5, the encoder is a demonstration rather than a feature —
 which is why it side-loads into `filesDir/cloner/` instead of shipping in the
 APK.
+
+## What the second night found: the basis was the ceiling
+
+Before spending a night on better targets, one 30-minute measurement
+(`tooling/basis_ceiling.py`): take the library's finished desktop inversions —
+voices with a reference recording and a held-out cosine around 0.8 — project
+each style onto the k=64 PCA basis, resynthesise, re-score. Twelve voices:
+
+| | held-out ECAPA cosine |
+|---|---|
+| inverted style, as-is | **0.826** |
+| same style through the preset-simplex basis | **0.225** |
+| through a basis refit with the other 11 voices' styles (LOO) | 0.290 |
+
+0.225 is the old encoder's real-recording score (0.223) to within noise. The
+regressor was never the problem; it was faithfully hitting the ceiling of a
+basis that cannot express real voices. Inversion walks *out* of the preset
+simplex to reach a speaker, and a basis fitted on simplex samples keeps
+almost none of where it goes.
+
+The rest of the night tested the fix. `embed_corpus.py` put 1 400 real
+speakers (LibriSpeech, augmented with noise/reverb/gain/codec) in the target
+bank; `invert_corpus.py` ran the desktop inversion over LibriSpeech speakers
+all night on the second GPU — one preset start, 500 iterations, held-out
+scored — banking (real embedding, style) pairs at a label quality of 0.83
+mean cosine. Three trainings, judged on speakers no round trained on:
+
+| basis | unseen LibriSpeech mean | best single voice |
+|---|---|---|
+| r1: simplex only, real targets | 0.149 | 0.395 |
+| r2: + 40 inverted styles at half mass, + supervised coeffs | 0.267 | 0.322 |
+| r3: + 70 inverted styles | 0.274 | **0.490** |
+
+Two conclusions. The mechanism works: refitting the basis with inverted real
+styles nearly doubled the unseen-speaker score, the worst case rose from 0.01
+to 0.24, and the supervised coefficient loss (`--aux-pairs`) gives the
+trainer a gradient that does not have to fight back through the synthesiser.
+And the next constraint is already visible: 40 -> 70 same-corpus styles moved
+the mean barely (0.267 -> 0.274) while the best case jumped — the shape of a
+k=64 basis saturating, and of a LibriSpeech-only style bank that contains
+nothing resembling an audiobook character voice (Dale stayed at ~0.1
+throughout; the voice type is absent from the basis, not badly regressed).
+
+So the levers, in order: k=96/128 now that the style bank justifies it,
+inverted styles from *diverse* corpora (VCTK accents, expressive speech)
+rather than more of the same one, then volume. The 0.5 bar stopped being a
+mystery and became a grind.

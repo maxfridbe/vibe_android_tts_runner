@@ -43,6 +43,18 @@ PROBES = [
     "The rainbow is a division of white light into many beautiful colors.",
     "Please leave a message after the tone and somebody will return your call.",
     "He described the weather, the passing ships, and the strange green light.",
+    # The first run cycled three probes and its eval set shared them; a wider
+    # pool, drawn at random per step, keeps the encoder from buying its score
+    # on a handful of sentences.
+    "The birch canoe slid on the smooth planks.",
+    "Glue the sheet to the dark blue background.",
+    "These days a chicken leg is a rare dish.",
+    "The hogs were fed chopped corn and garbage.",
+    "Four hours of steady work faced us.",
+    "A large size in stockings is hard to sell.",
+    "The boy was there when the sun rose.",
+    "Kick the ball straight and follow through.",
+    "Help the woman get back to her feet.",
 ]
 
 
@@ -105,12 +117,23 @@ def main():
                     help="npz of speaker embeddings to fit (gen_speaker_bank.py); "
                          "defaults to the pairs' own embeddings")
     ap.add_argument("--val-frac", type=float, default=0.1, help="speakers held out from training")
+    ap.add_argument("--val-max", type=int, default=128,
+                    help="cap on held-out rows; a real-corpus bank has thousands and a "
+                         "full pass every --val-every steps would out-cost the training")
     ap.add_argument("--val-every", type=int, default=250)
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--k", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--w-dur", type=float, default=0.3)
+    ap.add_argument("--basis-extra", default=None,
+                    help="npz with ttl/dp (invert_corpus.py) folded into the basis fit; "
+                         "replicated to ~1/3 of the fit's mass so a few dozen inverted "
+                         "styles are not drowned by 1200 simplex samples")
+    ap.add_argument("--aux-pairs", default=None,
+                    help="npz with (emb, ttl, dp) from real-speaker inversions; adds a "
+                         "supervised coefficient loss on top of the synthesis loss")
+    ap.add_argument("--w-aux", type=float, default=0.3)
     ap.add_argument("--out", default=os.path.join(WORK, "clone_out/encoder.pt"))
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--log-every", type=int, default=25)
@@ -124,24 +147,57 @@ def main():
     from speaker_encoder import SpeakerEncoder
     import torchaudio
 
+    torch.manual_seed(0)
     d = np.load(args.pairs, allow_pickle=True)
-    basis = StyleBasis(d["ttl"], d["dp"], args.k, dev)
+    ttl_fit, dp_fit = d["ttl"], d["dp"]
+    if args.basis_extra:
+        # the ceiling measurement (basis_ceiling.py) showed simplex directions
+        # carry almost nothing of a real voice — projection drops 0.83 -> 0.23
+        # — so the inverted styles get half the fit's mass, not a garnish
+        x = np.load(args.basis_extra, allow_pickle=True)
+        rep = max(1, len(ttl_fit) // max(len(x["ttl"]), 1))
+        ttl_fit = np.concatenate([ttl_fit, np.repeat(x["ttl"], rep, 0)])
+        dp_fit = np.concatenate([dp_fit, np.repeat(x["dp"], rep, 0)])
+        print(f"basis fit includes {len(x['ttl'])} inverted styles x{rep}")
+    basis = StyleBasis(ttl_fit, dp_fit, args.k, dev)
 
     # Targets decide what the encoder can reach. The pairs' own embeddings only
     # span the preset simplex; a Qwen-rolled bank covers far more speaker space
     # (measured mean pairwise cosine 0.14 vs 0.27), which is the whole point of
     # using a second model family to generate them.
-    tgt = np.load(args.targets, allow_pickle=True)["emb"] if args.targets else d["emb"]
-    tgt = np.asarray(tgt, dtype=np.float32)
+    tgt_npz = np.load(args.targets, allow_pickle=True) if args.targets else d
+    tgt = np.asarray(tgt_npz["emb"], dtype=np.float32)
     rng = np.random.default_rng(0)
-    perm = rng.permutation(len(tgt))
-    n_val = max(4, int(len(tgt) * args.val_frac))
-    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    if "spk" in tgt_npz:
+        # a real-corpus bank has several utterances per speaker; splitting rows
+        # would leak every val speaker into training through their siblings
+        spk = np.asarray(tgt_npz["spk"]).astype(str)
+        uniq = rng.permutation(np.unique(spk))
+        held = set(uniq[:max(4, int(len(uniq) * args.val_frac))].tolist())
+        mask = np.isin(spk, list(held))
+        val_idx, train_idx = np.where(mask)[0], np.where(~mask)[0]
+        print(f"speaker-level split: {len(uniq) - len(held)} train / {len(held)} val speakers")
+    else:
+        perm = rng.permutation(len(tgt))
+        n_val = max(4, int(len(tgt) * args.val_frac))
+        val_idx, train_idx = perm[:n_val], perm[n_val:]
+    val_idx = rng.permutation(val_idx)[:args.val_max]
     emb_bank = torch.tensor(tgt[train_idx], device=dev)
     val_bank = torch.tensor(tgt[val_idx], device=dev)
-    print(f"targets: {len(emb_bank)} train / {len(val_bank)} held-out speakers"
+    print(f"targets: {len(emb_bank)} train / {len(val_bank)} held-out rows"
           f" from {args.targets or args.pairs}")
-    dp_bank = torch.tensor(d["dp"], device=dev)
+    dp_bank = torch.tensor(np.concatenate([d["dp"], x["dp"]]) if args.basis_extra
+                           else d["dp"], device=dev)
+
+    aux_e = aux_c = None
+    if args.aux_pairs:
+        a = np.load(args.aux_pairs, allow_pickle=True)
+        with torch.no_grad():
+            aux_c = basis.encode(
+                torch.tensor(np.asarray(a["ttl"], dtype=np.float32), device=dev),
+                torch.tensor(np.asarray(a["dp"], dtype=np.float32), device=dev))
+        aux_e = torch.tensor(np.asarray(a["emb"], dtype=np.float32), device=dev)
+        print(f"aux supervision: {len(aux_e)} inverted real speakers, w {args.w_aux}")
 
     synth = DiffSynth(os.path.join(WORK, "assets/onnx"), device=str(dev))
     spk = SpeakerEncoder(device=str(dev))
@@ -167,7 +223,7 @@ def main():
     for step in range(1, args.steps + 1):
         idx = torch.randint(0, len(emb_bank), (args.batch,), device=dev)
         target = emb_bank[idx]                                   # what the voice should sound like
-        prep = preps[step % len(preps)]
+        prep = preps[int(torch.randint(0, len(preps), (1,)))]
 
         coeffs = enc(target)
         ttl, dp = basis.decode(coeffs)
@@ -192,6 +248,12 @@ def main():
             dref = dp_bank[torch.randint(0, len(dp_bank), (args.batch,), device=dev)]
             ref_dur = synth.durations(prep_b["text_ids"], dref, prep_b["text_mask"], 1.05)
         loss = (1.0 - cos) + args.w_dur * ((dur / ref_dur.clamp(min=0.1) - 1.0) ** 2).mean()
+        if aux_e is not None:
+            # direct supervision in coefficient space: for inverted real
+            # speakers we know a style that works, and this gradient does not
+            # have to fight its way back through the synthesiser
+            j = torch.randint(0, len(aux_e), (max(args.batch * 4, 8),), device=dev)
+            loss = loss + args.w_aux * F.mse_loss(enc(aux_e[j]), aux_c[j])
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
