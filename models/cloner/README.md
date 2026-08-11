@@ -1,16 +1,29 @@
 # On-device cloning encoder
 
-Two ONNX graphs the app downloads into `filesDir/cloner/` (Settings → On-device
-voice cloning), or that you can side-load with `adb`:
+Graphs the app downloads into `filesDir/cloner/` (Settings → On-device voice
+cloning), or that you can side-load with `adb`. There are two analyzer
+variants — pick one when cloning; the app offers both:
 
 | file | size | shape |
 |---|---|---|
 | `spk_encoder.onnx` | 84 MB | 16 kHz mono waveform → 192-d ECAPA embedding |
-| `style_encoder.onnx` | 5.0 MB | 192-d embedding → `style_ttl [1,50,256]`, `style_dp [1,8,16]` |
+| `style_encoder.onnx` | 8.4 MB | 192-d ECAPA embedding → `style_ttl [1,50,256]`, `style_dp [1,8,16]` |
+| `qwen_spk_encoder.onnx` | 49 MB | 24 kHz mono waveform → 2048-d Qwen3-TTS speaker embedding |
+| `style_encoder_qwen.onnx` | 9.6 MB | 2048-d Qwen embedding → the same style tensors |
 
-Together they turn a recording into a Supertonic speaker in two forward passes,
+Each pair turns a recording into a Supertonic speaker in two forward passes,
 about a second on a phone, where the desktop cloner needs a CUDA GPU and 500
-gradient-inversion steps.
+gradient-inversion steps. The ECAPA variant scores higher on speaker cosine;
+the Qwen variant was preferred in listening (it carries character voices
+better) and is the default in the clone dialog.
+
+The `style_encoder*` heads are supervised regressors trained through the
+frozen synthesiser on inverted-real-speaker labels (see
+`docs/on-device-cloning.md`). Retrained on 187 inverted pairs: ECAPA head
+0.496, Qwen head 0.429 true-unseen ECAPA cosine (against 0.82 for desktop
+inversion). The forward-only CMA polish (`tooling/cma_polish.py`) lifts these
+to ~0.57 on the phone by searching the same basis — the path to closing the
+rest of the gap.
 
 ## What this checkpoint is
 
