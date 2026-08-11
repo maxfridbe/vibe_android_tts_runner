@@ -126,12 +126,17 @@ synthesiser on inverted-real-speaker labels; they score **0.43–0.49** held-out
 speaker similarity against **0.82** for the desktop route below — a
 recognisable take on the voice rather than the person.
 
-Then a cloned style can be **refined on the phone**: a forward-only search
-(separable CMA-ES, `tooling/cma_polish.py` ported to Kotlin in `RefineEngine`)
-decodes candidate coefficients through the PCA basis, synthesises a short line,
-embeds it, and hill-climbs the cosine to the reference — a few hundred forward
-passes, no autograd, a few minutes. Gradient inversion can't run on a phone;
-this reaches for the same answer with only the passes the app already runs.
+Then a cloned style can be **refined on the phone** (a background job — leave the
+app, lock the screen): a forward-only search (separable CMA-ES,
+`tooling/cma_polish.py` ported to Kotlin in `RefineEngine`) decodes candidate
+coefficients through the PCA basis, synthesises a short line, embeds it, and
+hill-climbs the cosine to the reference — no autograd, just the forward passes
+the app already runs. Over the shipped **k=384 basis** (96.1 % of style
+variance) this reaches the desktop reference: measured **0.80–0.83** held-out on
+several voices (e.g. a soothing British voice 0.83, a fireside narrator 0.80),
+up from ~0.77 on the older k=128 basis. It's ~an hour of on-device compute for
+that quality, which is why it runs in the background. Gradient inversion can't
+run on a phone; this reaches the same answer without it.
 
 **On a CUDA box (the quality reference).** It can be done offline
 with [Mimocro/supertonic-voice-cloning](https://github.com/Mimocro/supertonic-voice-cloning),
