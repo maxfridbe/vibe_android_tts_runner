@@ -52,6 +52,17 @@ class RefineEngine(private val ctx: Context) {
     private var spk: OrtSession? = null
     private var supertonic: SupertonicEngine? = null
 
+    // Each ONNX session has ONE intra-op thread pool shared by all Run() calls,
+    // so overlapping candidate evaluations doesn't multiply cores — it fills the
+    // pool's idle time while another eval is in a serial phase. Keep the full
+    // pool per session and overlap a couple of candidates; true N× would need N
+    // copies of the ~400 MB model, which the phone can't spare. The population
+    // evals are independent (one synth + one embed on thread-safe sessions), so
+    // this is safe.
+    private val cores = Runtime.getRuntime().availableProcessors()
+    private val evalThreads = cores.coerceIn(2, 6)
+    val parallelism = 2.coerceAtMost(cores)
+
     private fun loadBasis(): Boolean {
         val f = File(VoiceCloner.dir(ctx), BASIS_ASSET)
         if (f.length() < 28) return false
@@ -70,14 +81,14 @@ class RefineEngine(private val ctx: Context) {
         return try {
             val e = OrtEnvironment.getEnvironment(); env = e
             val opts = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
+                setIntraOpNumThreads(evalThreads)   // small: parallelism is across candidates
             }
             val spkBytes = File(VoiceCloner.dir(ctx), VoiceCloner.SPK_ASSET).let {
                 if (it.exists()) it.readBytes() else ctx.assets.open(VoiceCloner.SPK_ASSET).use { s -> s.readBytes() }
             }
             spk = e.createSession(spkBytes, opts)
             supertonic = SupertonicEngine(ctx).also {
-                if (!it.load(ModelManager.supertonicDir(ctx), backend)) return false
+                if (!it.load(ModelManager.supertonicDir(ctx), backend, intraThreads = evalThreads)) return false
             }
             true
         } catch (t: Throwable) {
@@ -181,7 +192,7 @@ class RefineEngine(private val ctx: Context) {
      *  bails early when [alive] turns false (user cancelled). */
     private fun sepCma(x0: FloatArray, sigma0: Float, iters: Int, pop: Int,
                        f: (FloatArray) -> Float, onProgress: (Float) -> Unit,
-                       alive: () -> Boolean): FloatArray {
+                       alive: () -> Boolean, exec: java.util.concurrent.ExecutorService): FloatArray {
         val n = x0.size
         val mu = pop / 2
         val w = FloatArray(mu) { ln(mu + 0.5f) - ln((it + 1).toFloat()) }
@@ -198,13 +209,18 @@ class RefineEngine(private val ctx: Context) {
         val m = x0.copyOf(); var sigma = sigma0
         val C = FloatArray(n) { 1f }; val ps = FloatArray(n); val pc = FloatArray(n)
         var bestX = x0.copyOf(); var bestF = f(x0)
-        var evals = 1
+        val evals = java.util.concurrent.atomic.AtomicInteger(1)
         val total = 1 + iters * pop
         for (g in 0 until iters) {
             if (!alive()) break
             val z = Array(pop) { FloatArray(n) { rng.gauss() } }
             val x = Array(pop) { p -> FloatArray(n) { j -> (m[j] + sigma * sqrt(C[j]) * z[p][j]).coerceIn(-3f, 3f) } }
-            val scores = FloatArray(pop) { p -> f(x[p]).also { evals++; onProgress(evals.toFloat() / total) } }
+            // evaluate the whole population at once across the pool — each f() is
+            // an independent synth + embed on thread-safe sessions
+            val futures = Array(pop) { p -> exec.submit(java.util.concurrent.Callable { f(x[p]) }) }
+            val scores = FloatArray(pop) { p ->
+                futures[p].get().also { onProgress(evals.incrementAndGet().toFloat() / total) }
+            }
             val order = (0 until pop).sortedBy { scores[it] }
             if (scores[order[0]] < bestF) { bestF = scores[order[0]]; bestX = x[order[0]].copyOf() }
             val zmean = FloatArray(n); val newM = FloatArray(n)
@@ -243,18 +259,21 @@ class RefineEngine(private val ctx: Context) {
         val x0 = encode(seed)
         val startCos = cosineOf(x0)
 
-        var evalCount = 0
+        val evalCount = java.util.concurrent.atomic.AtomicInteger(0)
         val objective: (FloatArray) -> Float = { c ->
-            evalCount++
+            evalCount.incrementAndGet()
             var l2 = 0f; for (v in c) l2 += v * v
             -(cosineOf(c) - 0.02f * l2 / c.size)      // maximise cosine, gentle pull to the manifold
         }
-        val best = sepCma(x0, 0.35f, iters, pop, objective, onProgress, alive)
+        val exec = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
+        val best = try {
+            sepCma(x0, 0.35f, iters, pop, objective, onProgress, alive, exec)
+        } finally { exec.shutdownNow() }
         val endCos = cosineOf(best)
         // keep whichever actually scored better — a search can wander
         val chosen = if (endCos >= startCos) decode(best) else decode(x0)
         return Result(styleJson(chosen, refWav.name, maxOf(startCos, endCos)),
-            startCos, endCos, evalCount)
+            startCos, endCos, evalCount.get())
     }
 
     private fun embedPcm(pcm: FloatArray): FloatArray? {

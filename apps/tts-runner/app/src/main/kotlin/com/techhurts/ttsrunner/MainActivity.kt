@@ -1201,9 +1201,10 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Refine “${v.name}”?")
             .setMessage("Searches for a closer match to ${ref.name} by running many synthesis " +
-                "passes on the phone — around 40–55 minutes. It runs in the background: you can " +
-                "leave the app and lock the screen, and a notification tells you when it's done. " +
-                "The result is saved as a new voice, so the original is untouched.")
+                "passes on the phone, across all its cores — up to about an hour, for a result that " +
+                "can reach the desktop cloner's quality. It runs in the background: you can leave the " +
+                "app and lock the screen, and a notification tells you when it's done. The result is " +
+                "saved as a new voice, so the original is untouched.")
             .setPositiveButton("Refine in background") { _, _ ->
                 startForegroundService(Intent(this, RefineService::class.java)
                     .setAction(RefineService.ACTION_START)

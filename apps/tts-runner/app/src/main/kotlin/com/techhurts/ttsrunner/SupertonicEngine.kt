@@ -52,7 +52,7 @@ class SupertonicEngine(private val ctx: Context) {
     /** @param backend "cpu" | "nnapi" — NNAPI hands layers to the phone's
      *  accelerators (GPU/DSP/NPU) where the driver supports them and silently
      *  keeps the rest on CPU; unsupported devices fall back wholesale. */
-    fun load(dir: File, backend: String): Boolean {
+    fun load(dir: File, backend: String, intraThreads: Int = 0): Boolean {
         close()
         return try {
             val e = OrtEnvironment.getEnvironment()
@@ -64,7 +64,11 @@ class SupertonicEngine(private val ctx: Context) {
             chunkCompressFactor = cfg.getJSONObject("ttl").getInt("chunk_compress_factor")
             latentDim = cfg.getJSONObject("ttl").getInt("latent_dim")
 
-            val threads = Runtime.getRuntime().availableProcessors().coerceAtMost(6)
+            // A single utterance wants all the cores; the refine runs many
+            // synths at once, so it passes a small count and parallelises across
+            // candidates instead (pool × intra ≈ cores).
+            val threads = if (intraThreads > 0) intraThreads
+                else Runtime.getRuntime().availableProcessors().coerceAtMost(6)
             fun opts(): OrtSession.SessionOptions {
                 val o = OrtSession.SessionOptions()
                 o.setIntraOpNumThreads(threads)

@@ -35,13 +35,13 @@ class RefineService : Service() {
         const val EXTRA_NAME = "name"    // speaker name being refined
         const val STATUS = "com.techhurts.ttsrunner.REFINE_STATUS"
 
-        // The budget the desktop probe validated: ~1280 evaluations lifted
-        // held-out similarity to 0.58–0.77 (character voices gained the most,
-        // e.g. 0.21 -> 0.65), where a short 160-eval pass barely moved. On the
-        // phone that is ~40–55 min of background compute — fine for a one-time
-        // clone that no longer needs the screen on.
-        const val ITERS = 80
-        const val POP = 16
+        // A wider 384-component basis reaches 0.8+ (matching the desktop
+        // reference) but needs a bigger search — the desktop probe used ~3600
+        // evaluations at k=384. The refine now evaluates each generation's
+        // population across cores, so that budget stays roughly the same
+        // wall-clock as the old sequential k=128 run.
+        const val ITERS = 120
+        const val POP = 20
 
         private const val CHANNEL = "refine"
         private const val NOTIF_ID = 7
