@@ -49,12 +49,30 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           KEYSTORE_PROPERTIES: ${{ secrets.ANDROID_KEYSTORE_PROPERTIES }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            mkdir -p keystore
-            printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/release.keystore
-            printf '%s\n' "$KEYSTORE_PROPERTIES" > keystore/keystore.properties
-            echo "Using keystore from repository secrets"
+          # A missing or mis-pasted secret must never fail the build: without a
+          # usable key here, build.sh falls back to a throwaway self-signed one.
+          # (The whole job used to die on `base64 -d` of a corrupt secret.)
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "No keystore secret set; build.sh will generate a throwaway key."
+            exit 0
           fi
+          mkdir -p keystore
+          # tolerate any whitespace/newlines a pasted secret carries
+          if ! printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > keystore/release.keystore 2>/dev/null \
+             || [ ! -s keystore/release.keystore ]; then
+            echo "::warning::ANDROID_KEYSTORE_B64 is not valid base64; using a throwaway key (in-place updates break until the secret is re-set)."
+            rm -f keystore/release.keystore
+            exit 0
+          fi
+          printf '%s\n' "$KEYSTORE_PROPERTIES" > keystore/keystore.properties
+          storepass="$(sed -n 's/^storePassword=//p' keystore/keystore.properties)"
+          if command -v keytool >/dev/null 2>&1 \
+             && ! keytool -list -keystore keystore/release.keystore -storepass "$storepass" >/dev/null 2>&1; then
+            echo "::warning::keystore decoded but keytool could not open it with the given password; using a throwaway key (in-place updates break until the secrets are re-set)."
+            rm -f keystore/release.keystore keystore/keystore.properties
+            exit 0
+          fi
+          echo "Using keystore from repository secrets"
 
       - name: Build ${{ matrix.app }}
         run: |
