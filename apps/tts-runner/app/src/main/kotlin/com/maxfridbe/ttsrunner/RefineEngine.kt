@@ -137,22 +137,32 @@ class RefineEngine(private val ctx: Context) {
 
     private fun cosineOf(c: FloatArray): Float {
         val style = decode(c)
-        val wav = supertonic?.generate(PROBE, style, steps = 4) ?: return -1f
-        val emb = embed(wav) ?: return -1f
+        // 8 flow steps = the app's normal synthesis quality; fewer degrades the
+        // ECAPA read and depresses every score. generate() returns raw s16le
+        // mono PCM at the synth's sample rate, not a WAV file.
+        val pcmBytes = supertonic?.generate(PROBE, style, steps = 8) ?: return -1f
+        val srcRate = supertonic?.sampleRate ?: 44100
+        val pcm = pcm16ToMono16k(pcmBytes, srcRate) ?: return -1f
+        val emb = embedPcm(pcm) ?: return -1f
         var dot = 0f
         for (i in emb.indices) dot += emb[i] * target[i]
         return dot                              // both unit-norm out of spk_encoder
     }
 
-    /** WAV bytes (any rate, 16-bit mono) -> unit-norm ECAPA embedding. */
-    private fun embed(wavBytes: ByteArray): FloatArray? {
-        val pcm = wavToMono16k(wavBytes) ?: return null
-        val e = env ?: return null
-        val t = OnnxTensor.createTensor(e, FloatBuffer.wrap(pcm), longArrayOf(1, pcm.size.toLong()))
-        val out = spk!!.run(mapOf("wav" to t))
-        val emb = flatten(out[0].value)
-        out.close(); t.close()
-        return emb
+    /** Raw 16-bit LE mono PCM at [srcRate] -> float at 16 kHz. */
+    private fun pcm16ToMono16k(b: ByteArray, srcRate: Int): FloatArray? {
+        val frames = b.size / 2
+        if (frames < 2) return null
+        val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
+        val mono = FloatArray(frames) { bb.getShort(it * 2) / 32768f }
+        if (srcRate == RATE) return mono
+        val outN = (frames.toLong() * RATE / srcRate).toInt()
+        if (outN <= 1) return null
+        return FloatArray(outN) { i ->
+            val xf = i.toDouble() * (frames - 1) / (outN - 1)
+            val i0 = xf.toInt().coerceAtMost(frames - 1); val i1 = (i0 + 1).coerceAtMost(frames - 1)
+            val tt = (xf - i0).toFloat(); mono[i0] * (1 - tt) + mono[i1] * tt
+        }
     }
 
     // ---- separable CMA-ES (port of tooling/cma_polish.sep_cma) -------------
@@ -222,7 +232,7 @@ class RefineEngine(private val ctx: Context) {
     /** Polish [seedStyleFile] (a style JSON) against [refWav] and return the
      *  improved style JSON plus before/after cosine. [onProgress] is 0..1. */
     fun refine(refWav: File, seedStyleFile: File, backend: String = "cpu",
-               iters: Int = 25, pop: Int = 8,
+               iters: Int = 20, pop: Int = 8,
                onProgress: (Float) -> Unit = {}, alive: () -> Boolean = { true }): Result? {
         if (!load(backend)) return null
         target = run {
