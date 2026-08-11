@@ -1,0 +1,284 @@
+{
+ "voices": [
+  {
+   "name": "Gravel Pete",
+   "file": "gravel-pete.json",
+   "gender": "male",
+   "british": false,
+   "description": "deep, gravelly"
+  },
+  {
+   "name": "Smooth Cassius",
+   "file": "smooth-cassius.json",
+   "gender": "male",
+   "british": false,
+   "description": "smooth, easy"
+  },
+  {
+   "name": "Old Salt Silas",
+   "file": "old-salt-silas.json",
+   "gender": "male",
+   "british": false,
+   "description": "weathered narrator"
+  },
+  {
+   "name": "Thunder Boone",
+   "file": "thunder-boone.json",
+   "gender": "male",
+   "british": false,
+   "description": "booming"
+  },
+  {
+   "name": "Mellow Marlon",
+   "file": "mellow-marlon.json",
+   "gender": "male",
+   "british": false,
+   "description": "warm, mellow"
+  },
+  {
+   "name": "Grizzled Gus",
+   "file": "grizzled-gus.json",
+   "gender": "male",
+   "british": false,
+   "description": "rough, rugged"
+  },
+  {
+   "name": "Midnight Cole",
+   "file": "midnight-cole.json",
+   "gender": "male",
+   "british": false,
+   "description": "smooth, low"
+  },
+  {
+   "name": "Rusty Buck",
+   "file": "rusty-buck.json",
+   "gender": "male",
+   "british": false,
+   "description": "country twang"
+  },
+  {
+   "name": "Velvet Vincent",
+   "file": "velvet-vincent.json",
+   "gender": "male",
+   "british": false,
+   "description": "smooth, deep"
+  },
+  {
+   "name": "Captain Crag",
+   "file": "captain-crag.json",
+   "gender": "male",
+   "british": false,
+   "description": "commanding"
+  },
+  {
+   "name": "Jazzy Julian",
+   "file": "jazzy-julian.json",
+   "gender": "male",
+   "british": false,
+   "description": "cool, laid-back"
+  },
+  {
+   "name": "Boomer Hank",
+   "file": "boomer-hank.json",
+   "gender": "male",
+   "british": false,
+   "description": "big, hearty"
+  },
+  {
+   "name": "Whispering Wade",
+   "file": "whispering-wade.json",
+   "gender": "male",
+   "british": false,
+   "description": "soft, low"
+  },
+  {
+   "name": "Sly Reggie",
+   "file": "sly-reggie.json",
+   "gender": "male",
+   "british": false,
+   "description": "sly, playful"
+  },
+  {
+   "name": "Rumble McCoy",
+   "file": "rumble-mccoy.json",
+   "gender": "male",
+   "british": false,
+   "description": "rumbly bass"
+  },
+  {
+   "name": "Sir Duncan",
+   "file": "sir-duncan.json",
+   "gender": "male",
+   "british": true,
+   "description": "refined British \u00b7 British"
+  },
+  {
+   "name": "Baron von Bass",
+   "file": "baron-von-bass.json",
+   "gender": "male",
+   "british": true,
+   "description": "deep aristocratic British \u00b7 British"
+  },
+  {
+   "name": "Professor Fig",
+   "file": "professor-fig.json",
+   "gender": "male",
+   "british": true,
+   "description": "bookish British \u00b7 British"
+  },
+  {
+   "name": "Radio Ray",
+   "file": "radio-ray.json",
+   "gender": "male",
+   "british": true,
+   "description": "BBC broadcaster \u00b7 British"
+  },
+  {
+   "name": "Deacon Gray",
+   "file": "deacon-gray.json",
+   "gender": "male",
+   "british": true,
+   "description": "solemn British \u00b7 British"
+  },
+  {
+   "name": "Bright Birdie",
+   "file": "bright-birdie.json",
+   "gender": "female",
+   "british": false,
+   "description": "bright, cheery"
+  },
+  {
+   "name": "Silky Seraphina",
+   "file": "silky-seraphina.json",
+   "gender": "female",
+   "british": false,
+   "description": "smooth, silky"
+  },
+  {
+   "name": "Bubbly Bex",
+   "file": "bubbly-bex.json",
+   "gender": "female",
+   "british": false,
+   "description": "bubbly, upbeat"
+  },
+  {
+   "name": "Sunny Sadie",
+   "file": "sunny-sadie.json",
+   "gender": "female",
+   "british": false,
+   "description": "sunny, warm"
+  },
+  {
+   "name": "Frosty Fern",
+   "file": "frosty-fern.json",
+   "gender": "female",
+   "british": false,
+   "description": "cool, crisp"
+  },
+  {
+   "name": "Cocoa Coretta",
+   "file": "cocoa-coretta.json",
+   "gender": "female",
+   "british": false,
+   "description": "rich, warm"
+  },
+  {
+   "name": "Sparkle Sky",
+   "file": "sparkle-sky.json",
+   "gender": "female",
+   "british": false,
+   "description": "sparkly, high"
+  },
+  {
+   "name": "Marmalade Maisie",
+   "file": "marmalade-maisie.json",
+   "gender": "female",
+   "british": false,
+   "description": "sweet"
+  },
+  {
+   "name": "Lark Lucia",
+   "file": "lark-lucia.json",
+   "gender": "female",
+   "british": false,
+   "description": "light, airy"
+  },
+  {
+   "name": "Honey Harlow",
+   "file": "honey-harlow.json",
+   "gender": "female",
+   "british": false,
+   "description": "warm, smooth"
+  },
+  {
+   "name": "Misty Marlowe",
+   "file": "misty-marlowe.json",
+   "gender": "female",
+   "british": false,
+   "description": "breathy"
+  },
+  {
+   "name": "Ruby Rae",
+   "file": "ruby-rae.json",
+   "gender": "female",
+   "british": false,
+   "description": "bold"
+  },
+  {
+   "name": "Clementine June",
+   "file": "clementine-june.json",
+   "gender": "female",
+   "british": false,
+   "description": "cheerful"
+  },
+  {
+   "name": "Sassy Simza",
+   "file": "sassy-simza.json",
+   "gender": "female",
+   "british": false,
+   "description": "sassy"
+  },
+  {
+   "name": "Pixie Wren",
+   "file": "pixie-wren.json",
+   "gender": "female",
+   "british": false,
+   "description": "tiny, bright"
+  },
+  {
+   "name": "Duchess Delphine",
+   "file": "duchess-delphine.json",
+   "gender": "female",
+   "british": true,
+   "description": "regal British \u00b7 British"
+  },
+  {
+   "name": "Nightingale Nova",
+   "file": "nightingale-nova.json",
+   "gender": "female",
+   "british": true,
+   "description": "melodic British \u00b7 British"
+  },
+  {
+   "name": "Willow Whisper",
+   "file": "willow-whisper.json",
+   "gender": "female",
+   "british": true,
+   "description": "soft British \u00b7 British"
+  },
+  {
+   "name": "Foxglove Faye",
+   "file": "foxglove-faye.json",
+   "gender": "female",
+   "british": true,
+   "description": "mysterious British \u00b7 British"
+  },
+  {
+   "name": "Aurora Belle",
+   "file": "aurora-belle.json",
+   "gender": "female",
+   "british": true,
+   "description": "ethereal British \u00b7 British"
+  }
+ ]
+}

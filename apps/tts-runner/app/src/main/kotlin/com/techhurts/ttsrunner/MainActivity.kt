@@ -936,6 +936,7 @@ class MainActivity : AppCompatActivity() {
                         .putExtra(Intent.EXTRA_MIME_TYPES,
                             arrayOf("application/json", "text/json")), REQ_IMPORT)
                 }
+                action(Icons.DOWNLOAD, "Library…") { voiceLibraryDialog() }
                 action(Icons.FOLDER, "Backup ▾") { filesMenu(it) }
             } else {
                 action(Icons.PLUS, "Add ▾") { cloneMenu(it) }
@@ -1213,6 +1214,45 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    /** Import from the bundled example library (this repo's /voices): a set of
+     *  generated Supertonic speakers, each with a name and a description. Pick
+     *  any number; the styles download and become speakers, metadata and all. */
+    private fun voiceLibraryDialog() {
+        toast("Loading voice library…")
+        thread {
+            val entries = runCatching { VoiceLibrary.manifest() }.getOrNull()
+            runOnUiThread {
+                if (entries.isNullOrEmpty()) { toast("Couldn't load the voice library — check the network"); return@runOnUiThread }
+                val have = VoiceStore.list(this).map { it.name }.toSet()
+                val labels = entries.map {
+                    (if (it.british) "🇬🇧 " else "") + it.name +
+                        " — " + it.description + (if (it.name in have) "  ✓" else "")
+                }.toTypedArray()
+                val checked = BooleanArray(entries.size)
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Voice library (${entries.size})")
+                    .setMultiChoiceItems(labels, checked) { _, i, v -> checked[i] = v }
+                    .setPositiveButton("Import") { _, _ ->
+                        val picks = entries.filterIndexed { i, _ -> checked[i] }
+                        if (picks.isEmpty()) { toast("Nothing selected"); return@setPositiveButton }
+                        toast("Importing ${picks.size}…")
+                        thread {
+                            var ok = 0
+                            for (e in picks) runCatching {
+                                VoiceStore.importStyle(this, VoiceLibrary.download(this, e), e.name); ok++
+                            }.onFailure { DebugLog.log(this, "VoiceLibrary", "import ${e.name} failed", it as? Exception ?: Exception(it)) }
+                            runOnUiThread {
+                                rebuildVoices(); refreshVoiceLabel()
+                                toast(if (ok == picks.size) "Imported $ok" else "Imported $ok of ${picks.size} — see log")
+                            }
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
     }
 
     /** The per-engine default marker: a filled star on the speaker used when a

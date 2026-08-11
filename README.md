@@ -17,10 +17,11 @@ Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
 - **Speakers** — a tab per engine: ⚡ Supertonic (style files) and 🐢 Qwen
   (reference recordings). Clone from a recording — trimming it to the section
   you want on a waveform first — record one now, *design* one from a
-  description, or import styles. There is no global "active model": the speaker
-  you pick decides the engine and the model, and a ★ marks the per-engine
-  default. A cloned voice can be **refined on the phone** to sound closer (a
-  gradient-free search, a few minutes).
+  description, import styles, or pull ready-made speakers from the built-in
+  **voice library** (a set of generated, no-real-person Supertonic voices). There
+  is no global "active model": the speaker you pick decides the engine and the
+  model, and a ★ marks the per-engine default. A cloned voice can be **refined in
+  the background on the phone** to sound closer (a gradient-free search).
 - **Chats** — conversations you keep. Type a line, hear it immediately, switch
   speaker mid-scene, drag lines into the order you want, replay the whole
   thing or export it as one track. The audio travels with the line, so
@@ -173,6 +174,23 @@ experimental on-device encoder above.
 
 Everything is downloadable in-app, so a fresh install needs nothing but the
 APK and network.
+
+### Where each downloaded file comes from
+
+Nothing but the APK ships in the install; every model is fetched on first use,
+each from its own public host — no account or API token:
+
+| File(s) | Source |
+|---|---|
+| `duration_predictor.onnx`, `text_encoder.onnx`, `vector_estimator.onnx`, `vocoder.onnx` | Supertonic 3 graphs — [huggingface.co/Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) `/onnx` |
+| `F1`–`F5`, `M1`–`M5` style voices | the ten preset speakers — [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) `/voice_styles` |
+| `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf` / `-Q8_0.gguf` + `mmproj-…-Q8_0.gguf` | Qwen talker + codec projector — [huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
+| `Qwen3-TTS-12Hz-1.7B-Base-Q4_0.gguf` | **not downloaded** — requantized on-device from the Q8 file (nobody hosts this quant; needed for the Adreno OpenCL kernels) |
+| `Qwen3-TTS-VD-Q4_K_M.gguf` + `mmproj-Qwen3-TTS-VD-Q8_0.gguf` | VoiceDesign talker + projector — this repo's [`models-v1` release](https://github.com/maxfridbe/vibe_android_tts_runner/releases/tag/models-v1) (upstream ships no VoiceDesign GGUF) |
+| `spk_encoder.onnx`, `style_encoder.onnx`, `qwen_spk_encoder.onnx`, `style_encoder_qwen.onnx`, `style_basis.bin` | on-device cloning graphs — this repo's [`models/cloner`](models/cloner) via `raw.githubusercontent.com` |
+
+The cloning graphs are fetched as raw files from the repo (no release plumbing),
+and re-download automatically if a retrained model of the same name changes size.
 
 To rebuild the VoiceDesign GGUFs yourself, run llama.cpp's converter — this
 repo's patch is required, it teaches the converter and mtmd about a codec-only
