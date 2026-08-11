@@ -9,13 +9,13 @@ val sharedKeystore = findProperty("appKeystoreFile") as String?
 
 android {
     namespace = "com.techhurts.ttsrunner"
-    compileSdk = 34
+    compileSdk = 35
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.techhurts.ttsrunner"
         minSdk = 29        // vendor OpenCL dlopen path + typed foreground services
-        targetSdk = 34
+        targetSdk = 35     // Play Store minimum for new apps / updates
         // Injected by build.sh from git (commit count / git describe);
         // the defaults only apply to builds outside the build system.
         versionCode = (findProperty("appVersionCode") as String?)?.toInt() ?: 1

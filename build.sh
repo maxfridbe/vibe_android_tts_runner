@@ -114,13 +114,15 @@ for app in "${APPS[@]}"; do
 
     mkdir -p "output/$app"
     found=0
-    while IFS= read -r apk; do
+    # APKs (assemble*) and AABs (bundle*, the Play upload format) both land here
+    while IFS= read -r art; do
         found=1
-        # app-debug.apk -> <app>-<version>-debug.apk
-        cp -v "$apk" "output/$app/${app}-${VERSION_NAME}-$(basename "$apk" | sed 's/^app-//')"
-    done < <(find "$dir" -path '*/build/outputs/apk/*' -name '*.apk')
+        # app-debug.apk -> <app>-<version>-debug.apk ; app-release.aab -> <app>-<version>-release.aab
+        cp -v "$art" "output/$app/${app}-${VERSION_NAME}-$(basename "$art" | sed 's/^app-//')"
+    done < <(find "$dir" \( -path '*/build/outputs/apk/*' -name '*.apk' \) -o \
+                        \( -path '*/build/outputs/bundle/*' -name '*.aab' \))
     if [ "$found" = "0" ]; then
-        echo "error: no APK produced for $app" >&2
+        echo "error: no APK or AAB produced for $app" >&2
         exit 1
     fi
 done

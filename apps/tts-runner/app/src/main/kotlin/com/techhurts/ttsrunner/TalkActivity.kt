@@ -508,7 +508,55 @@ class TalkActivity : AppCompatActivity() {
         val ready = lines.mapNotNull { it.audio }
         if (ready.isEmpty()) { toast("Nothing generated yet"); return }
         toast("Replaying ${ready.size} line${if (ready.size == 1) "" else "s"} · ${Wav.fmt(lines.sumOf { it.secs })}")
-        playFiles(ready)
+        // Play the same single track the export produces: joining the lines with
+        // the configured gap (and trimming baked-in padding) drops the ragged
+        // teardown-and-reprepare pause that sequential MediaPlayers leave
+        // between speakers, so a replay sounds like the m4a will.
+        status.text = "playing…"
+        thread {
+            val joined = runCatching {
+                Wav.join(File(cacheDir, "talk-replay.wav"), ready, chatGapMs(), chatTrim())
+            }.getOrNull()
+            runOnUiThread { if (joined != null) playFiles(listOf(joined)) else playFiles(ready) }
+        }
+    }
+
+    // ---- speaker gap --------------------------------------------------------
+
+    private fun chatPrefs() = getSharedPreferences("ttsrunner", MODE_PRIVATE)
+    private fun chatGapMs() = chatPrefs().getInt("chat_gap_ms", 120)
+    private fun chatTrim() = chatPrefs().getBoolean("chat_trim", true)
+
+    /** The pause between speakers, applied to both replay and the exported
+     *  track. Tighter than the old fixed 350 ms, and trimming the engines'
+     *  per-line padding is what actually makes a chat sound natural rather than
+     *  stop-start. */
+    private fun gapDialog() {
+        val options = listOf(
+            "None — run together" to 0,
+            "Tight (80 ms)" to 80,
+            "Natural (150 ms)" to 150,
+            "Relaxed (300 ms)" to 300,
+            "Slow (500 ms)" to 500,
+        )
+        val current = chatGapMs()
+        val checked = options.indexOfFirst { it.second == current }.let { if (it < 0) 2 else it }
+        val labels = options.map { it.first }.toTypedArray()
+        var pick = checked
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Pause between speakers")
+            .setSingleChoiceItems(labels, checked) { _, which -> pick = which }
+            .setNeutralButton(
+                if (chatTrim()) "Trim padding: on" else "Trim padding: off") { _, _ ->
+                chatPrefs().edit().putBoolean("chat_trim", !chatTrim()).apply()
+                gapDialog()
+            }
+            .setPositiveButton("Use") { _, _ ->
+                chatPrefs().edit().putInt("chat_gap_ms", options[pick].second).apply()
+                toast("Speaker gap: ${options[pick].first}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ---- keeping what was said ---------------------------------------------
@@ -539,7 +587,7 @@ class TalkActivity : AppCompatActivity() {
         thread {
             runCatching {
                 val joined = File(cacheDir, "talk-share.wav")
-                Wav.join(joined, ready) ?: error("nothing readable")
+                Wav.join(joined, ready, chatGapMs(), chatTrim()) ?: error("nothing readable")
                 AudioShare.shareWavAsM4a(this, joined, title)
             }.onFailure { e ->
                 runOnUiThread { toast("Share failed: ${e.message}") }
@@ -554,7 +602,7 @@ class TalkActivity : AppCompatActivity() {
         thread {
             val result = runCatching {
                 val joined = File(cacheDir, "talk-save.wav")
-                val clip = Wav.join(joined, ready)?.let { Wav.read(it) } ?: error("nothing readable")
+                val clip = Wav.join(joined, ready, chatGapMs(), chatTrim())?.let { Wav.read(it) } ?: error("nothing readable")
                 val saver = AudioSaver(this, title, clip.rate)
                 saver.write(clip.pcm)
                 saver.finish()
@@ -610,6 +658,7 @@ class TalkActivity : AppCompatActivity() {
             menu.add("Rename chat")
             menu.add("Close chat")
             menu.add("Replay all")
+            menu.add("Speaker gap…")
             menu.add("Share as one track")
             menu.add("Save as one track")
             menu.add("Copy chat")
@@ -623,6 +672,7 @@ class TalkActivity : AppCompatActivity() {
                     "Rename chat" -> renameDialog()
                     "Close chat" -> { persist(); finish() }
                     "Replay all" -> replayAll()
+                    "Speaker gap…" -> gapDialog()
                     "Share as one track" -> shareAudio(audio, "Talk")
                     "Save as one track" -> saveAudio(audio, "Talk")
                     "Copy chat" -> if (lines.isEmpty()) toast("Nothing said yet") else copy(asChat(), "Conversation")

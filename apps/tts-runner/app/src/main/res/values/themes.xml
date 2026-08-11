@@ -2,6 +2,11 @@
 <resources>
     <style name="Theme.TTSRunner" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+        <!-- targetSdk 35 makes Android 15 force edge-to-edge; these screens lay
+             their own padding and do not consume window insets, so opt out of
+             the enforcement for now (the flag is a no-op below API 35). Handle
+             insets properly before this is removed in a later Android. -->
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
 
     <!-- Floating share-sheet target. Must be a full theme, not a

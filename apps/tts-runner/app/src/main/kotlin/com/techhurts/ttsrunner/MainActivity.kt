@@ -303,9 +303,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // background Refine finished (or failed): the new voice is already imported
+    // by the service, so refresh the list and say so if we happen to be open
+    private val refineReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.getStringExtra("state")) {
+                "done" -> {
+                    rebuildVoices(); refreshVoiceLabel()
+                    intent.getStringExtra("message")?.takeIf { it.isNotBlank() }?.let { toast(it) }
+                }
+                "error" -> toast(intent.getStringExtra("message")?.takeIf { it.isNotBlank() }
+                    ?: "Refine failed — see Settings → Copy log")
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         registerReceiver(statusReceiver, IntentFilter(TtsService.STATUS_BROADCAST), RECEIVER_NOT_EXPORTED)
+        registerReceiver(refineReceiver, IntentFilter(RefineService.STATUS), RECEIVER_NOT_EXPORTED)
         ui.post(memTicker)
         // a voice may have been recorded while we were paused (RecordActivity)
         if (currentTab == TAB_VOICES && tabs.containsKey(TAB_VOICES)) rebuildVoices()
@@ -317,6 +333,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         unregisterReceiver(statusReceiver)
+        runCatching { unregisterReceiver(refineReceiver) }
         ui.removeCallbacks(memTicker)
     }
 
@@ -1045,7 +1062,7 @@ class MainActivity : AppCompatActivity() {
             // a cloned style can be polished toward its reference recording,
             // if that recording is still in the library and the basis is here
             if (isStyle && RefineEngine.available(this@MainActivity) && refFor(v) != null)
-                menu.add("Refine to sound closer (a few min)")
+                menu.add("Refine to sound closer (background)")
             menu.add("Save to folder…")
             menu.add("Edit…")
             menu.add("Delete")
@@ -1053,7 +1070,7 @@ class MainActivity : AppCompatActivity() {
                 when (it.title) {
                     "Share as a file" -> shareSpeaker(v)
                     "Clone to a Supertonic voice…" -> cloneToSupertonic(v)
-                    "Refine to sound closer (a few min)" -> refineVoice(v)
+                    "Refine to sound closer (background)" -> refineVoice(v)
                     "Copy to Qwen (preview becomes reference)" -> {
                         val p = VoiceStore.previewFile(this@MainActivity, v.name, modelFor(v)?.id ?: "none")
                         if (!p.exists()) {
@@ -1179,48 +1196,23 @@ class MainActivity : AppCompatActivity() {
      *  voice so the original is never lost. */
     private fun refineVoice(v: VoiceStore.Voice) {
         val ref = refFor(v) ?: run { toast("The reference recording for this voice is gone"); return }
-        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 1000; isIndeterminate = false
-        }
-        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("Refining “${v.name}”")
-            .setMessage("Searching for a closer match to ${ref.name}. This runs a few " +
-                "minutes of synthesis on the phone — keep the app open.")
-            .setView(bar)
-            .setNegativeButton("Stop") { _, _ -> cancelled.set(true) }
-            .setCancelable(false)
-            .create()
-        dialog.show()
-        val wake = getSystemService(android.os.PowerManager::class.java)
-            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ttsrunner:refine")
-            .apply { acquire(20 * 60_000L) }
-        thread {
-            val engine = RefineEngine(this)
-            val result = runCatching {
-                engine.refine(ref.file, v.file,
-                    onProgress = { f -> runOnUiThread { bar.progress = (f * 1000).toInt() } },
-                    alive = { !cancelled.get() })
-            }.getOrNull()
-            engine.close()
-            runCatching { wake.release() }
-            runOnUiThread {
-                dialog.dismiss()
-                if (cancelled.get()) { toast("Refine stopped"); return@runOnUiThread }
-                if (result == null) { toast("Refine failed — see Settings → Copy log"); return@runOnUiThread }
-                val tmp = File(cacheDir, "refined.json").apply { writeText(result.style.toString()) }
-                val out = VoiceStore.importStyle(this, tmp, "${v.name} (refined)")
-                rebuildVoices()
-                MaterialAlertDialogBuilder(this)
-                    .setTitle("Refined: ${out.name}")
-                    .setMessage("Similarity to ${ref.name} went from " +
-                        "${"%.2f".format(result.startCos)} to ${"%.2f".format(result.endCos)} " +
-                        "over ${result.evals} tries. Saved as a new voice — play both and keep " +
-                        "the one you like.")
-                    .setPositiveButton("OK", null)
-                    .show()
+        if (RefineService.running) { toast("Already refining “${RefineService.refiningName}”"); return }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Refine “${v.name}”?")
+            .setMessage("Searches for a closer match to ${ref.name} by running many synthesis " +
+                "passes on the phone — around 40–55 minutes. It runs in the background: you can " +
+                "leave the app and lock the screen, and a notification tells you when it's done. " +
+                "The result is saved as a new voice, so the original is untouched.")
+            .setPositiveButton("Refine in background") { _, _ ->
+                startForegroundService(Intent(this, RefineService::class.java)
+                    .setAction(RefineService.ACTION_START)
+                    .putExtra(RefineService.EXTRA_REF, ref.file.absolutePath)
+                    .putExtra(RefineService.EXTRA_SEED, v.file.absolutePath)
+                    .putExtra(RefineService.EXTRA_NAME, v.name))
+                toast("Refining “${v.name}” in the background…")
             }
-        }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** The per-engine default marker: a filled star on the speaker used when a

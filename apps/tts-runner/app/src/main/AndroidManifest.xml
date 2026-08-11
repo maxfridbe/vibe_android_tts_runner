@@ -19,6 +19,8 @@
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:theme="@style/Theme.TTSRunner">
 
         <!-- vendor OpenCL drivers, resolved through the bundled dlopen shim -->
@@ -106,5 +108,13 @@
             android:name=".ResumeReceiver"
             android:process=":engine"
             android:exported="false" />
+
+        <!-- background "Refine this voice": a long CPU search that must survive
+             the screen going off, so it runs foreground with a silent-audio
+             keepalive (media playback) like the save jobs -->
+        <service
+            android:name=".RefineService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

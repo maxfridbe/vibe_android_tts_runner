@@ -26,8 +26,8 @@ RUN wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${C
 
 RUN yes | sdkmanager --licenses >/dev/null
 
-ARG ANDROID_PLATFORM="android-34"
-ARG BUILD_TOOLS="34.0.0"
+ARG ANDROID_PLATFORM="android-35"
+ARG BUILD_TOOLS="35.0.0"
 ARG NDK_VERSION="27.2.12479018"
 RUN sdkmanager \
     "platform-tools" \

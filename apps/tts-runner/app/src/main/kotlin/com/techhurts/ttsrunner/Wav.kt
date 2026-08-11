@@ -63,9 +63,12 @@ object Wav {
     }
 
     /** Joins clips into one file, with [gapMs] of silence between them so a
-     *  conversation does not run together into one breathless sentence.
-     *  Returns null if nothing was readable. */
-    fun join(dest: File, sources: List<File>, gapMs: Int = 350): File? {
+     *  conversation does not run together into one breathless sentence. When
+     *  [trim] is set, each clip's leading and trailing near-silence (the padding
+     *  the TTS engines bake onto every utterance) is removed first, so the only
+     *  pause between speakers is the one [gapMs] asks for. Returns null if
+     *  nothing was readable. */
+    fun join(dest: File, sources: List<File>, gapMs: Int = 350, trim: Boolean = false): File? {
         val clips = sources.mapNotNull { read(it) }.filter { it.pcm.isNotEmpty() }
         if (clips.isEmpty()) return null
         val rate = clips.first().rate
@@ -73,10 +76,35 @@ object Wav {
         val out = java.io.ByteArrayOutputStream()
         for ((i, c) in clips.withIndex()) {
             if (i > 0) out.write(gap)
-            out.write(c.pcm)
+            out.write(if (trim) trimSilence(c.pcm, rate) else c.pcm)
         }
         write(dest, rate, out.toByteArray())
         return dest
+    }
+
+    /** Drop leading/trailing near-silence from a 16-bit mono PCM buffer, keeping
+     *  a short margin so consonants and natural decay are not clipped. The
+     *  threshold is a fraction of full scale; speech sits well above it and the
+     *  engines' padding well below. */
+    fun trimSilence(pcm: ByteArray, rate: Int,
+                    thresholdFrac: Double = 0.02, marginMs: Int = 40): ByteArray {
+        val n = pcm.size / 2
+        if (n == 0) return pcm
+        val thr = (thresholdFrac * Short.MAX_VALUE).toInt()
+        fun amp(i: Int): Int {
+            val lo = pcm[2 * i].toInt() and 0xff
+            val hi = pcm[2 * i + 1].toInt()
+            return kotlin.math.abs((hi shl 8) or lo)
+        }
+        var first = 0
+        while (first < n && amp(first) < thr) first++
+        if (first == n) return ByteArray(0)          // all silence
+        var last = n - 1
+        while (last > first && amp(last) < thr) last--
+        val margin = rate * marginMs / 1000
+        val a = (first - margin).coerceAtLeast(0)
+        val b = (last + margin).coerceAtMost(n - 1)
+        return pcm.copyOfRange(2 * a, 2 * (b + 1))
     }
 
     /** "1m 43s" / "12s" */

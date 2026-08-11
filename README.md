@@ -1,6 +1,12 @@
 # TTS Runner — on-device Qwen3-TTS for Android
 
 [![build](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml/badge.svg)](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml)
+[![Install with Obtainium](https://img.shields.io/badge/Install%20with-Obtainium-6c4fd3?logo=android&logoColor=white)](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.techhurts.ttsrunner%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fmaxfridbe%252Fvibe_android_tts_runner%2522%252C%2522author%2522%253A%2522maxfridbe%2522%252C%2522name%2522%253A%2522TTS%2520Runner%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522apkFilterRegEx%255C%2522%253A%2520%255C%2522release%255C%2522%252C%2520%255C%2522invertAPKFilter%255C%2522%253A%2520false%252C%2520%255C%2522about%255C%2522%253A%2520%255C%2522On-device%2520text-to-speech%2520and%2520voice%2520cloning.%2520No%2520server%252C%2520no%2520account.%255C%2522%257D%2522%257D)
+
+Install and auto-update straight from the GitHub releases with
+[Obtainium](https://github.com/ImranR98/Obtainium) — tap the badge on your phone
+(Obtainium tracks the `release` APK from each tagged release), or `adb install`
+the APK below.
 
 Share any text or article link to **TTS Runner** and it reads it aloud in a
 cloned voice, entirely on-device: no server, no account, no audio leaving the
