@@ -940,12 +940,9 @@ class MainActivity : AppCompatActivity() {
                     val row = LinearLayout(context).apply {
                         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                     }
-                    row.addView(RadioButton(context).apply {
-                        isChecked = v.name == styleDef?.name
-                        setOnClickListener {
-                            VoiceStore.setDefaultFor(this@MainActivity, v, true)
-                            rebuildVoices(); refreshVoiceLabel()
-                        }
+                    row.addView(defaultStar(v.name == styleDef?.name) {
+                        VoiceStore.setDefaultFor(this@MainActivity, v, true)
+                        rebuildVoices(); refreshVoiceLabel()
                     })
                     row.addView(TextView(context).apply {
                         text = "⚡"; textSize = 11f
@@ -986,12 +983,9 @@ class MainActivity : AppCompatActivity() {
         for (v in refVoices) {
             addView(card {
                 val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                head.addView(RadioButton(context).apply {
-                    isChecked = v.name == def?.name
-                    setOnClickListener {
-                        VoiceStore.setDefault(this@MainActivity, v)
-                        rebuildVoices(); refreshVoiceLabel()
-                    }
+                head.addView(defaultStar(v.name == def?.name) {
+                    VoiceStore.setDefault(this@MainActivity, v)
+                    rebuildVoices(); refreshVoiceLabel()
                 })
                 head.addView(TextView(context).apply {
                     text = "🐢"; textSize = 11f
@@ -1228,6 +1222,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    /** The per-engine default marker: a filled star on the speaker used when a
+     *  job, chat, share or API call names no voice; a hollow one to make
+     *  another the default. Lighter than a radio, and it says what it does —
+     *  "default", not "selected model", which no longer exists. */
+    private fun defaultStar(isDefault: Boolean, onPick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = if (isDefault) "★" else "☆"
+            textSize = 20f
+            alpha = if (isDefault) 1f else 0.4f
+            setPadding(dp(4), 0, dp(8), 0)
+            contentDescription = if (isDefault) "Default speaker" else "Make default"
+            if (!isDefault) setOnClickListener { onPick() }
+        }
 
     /** Voice whose preview is being generated right now, so its row can show a
      *  spinner instead of a play button that looks like it did nothing. */
