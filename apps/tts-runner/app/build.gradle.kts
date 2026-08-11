@@ -8,12 +8,12 @@ plugins {
 val sharedKeystore = findProperty("appKeystoreFile") as String?
 
 android {
-    namespace = "com.maxfridbe.ttsrunner"
+    namespace = "com.techhurts.ttsrunner"
     compileSdk = 34
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "com.maxfridbe.ttsrunner"
+        applicationId = "com.techhurts.ttsrunner"
         minSdk = 29        // vendor OpenCL dlopen path + typed foreground services
         targetSdk = 34
         // Injected by build.sh from git (commit count / git describe);

@@ -82,7 +82,7 @@
         <!-- share-as-m4a for locally generated audio -->
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.maxfridbe.ttsrunner.files"
+            android:authorities="com.techhurts.ttsrunner.files"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

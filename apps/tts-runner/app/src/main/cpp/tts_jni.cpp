@@ -63,7 +63,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *, void *) {
 // layers to OpenCL (Adreno). The codec ("mmproj") always runs on CPU: the
 // Adreno OpenCL kernels abort on its graph (they cover LLM shapes only).
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
+Java_com_techhurts_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
         jstring jmodel, jstring jmmproj, jstring jbackend, jint nThreads) try {
     g_engine.reset();
     g_last_error.clear();
@@ -177,7 +177,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nLoad(JNIEnv * env, jclass,
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nUnload(JNIEnv *, jclass) {
+Java_com_techhurts_ttsrunner_TtsEngine_nUnload(JNIEnv *, jclass) {
     g_engine.reset();
 }
 
@@ -185,7 +185,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nUnload(JNIEnv *, jclass) {
 // OpenCL kernels are tuned for Q4_0 specifically, so the app derives it from
 // the downloaded Q8_0 (streaming, low memory, a few minutes on-device).
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nQuantize(JNIEnv * env, jclass,
+Java_com_techhurts_ttsrunner_TtsEngine_nQuantize(JNIEnv * env, jclass,
         jstring jsrc, jstring jdst, jstring jtype) try {
     g_last_error.clear();
     const std::string src  = jstr(env, jsrc);
@@ -225,7 +225,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nQuantize(JNIEnv * env, jclass,
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
+Java_com_techhurts_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
     g_cancel = true;
 }
 
@@ -233,19 +233,19 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nCancel(JNIEnv *, jclass) {
 // cancel that lands between two nGenerate calls still kills the next one.
 // The service clears it explicitly when a new job takes over.
 extern "C" JNIEXPORT void JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nResetCancel(JNIEnv *, jclass) {
+Java_com_techhurts_ttsrunner_TtsEngine_nResetCancel(JNIEnv *, jclass) {
     g_cancel = false;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nLastError(JNIEnv * env, jclass) {
+Java_com_techhurts_ttsrunner_TtsEngine_nLastError(JNIEnv * env, jclass) {
     return env->NewStringUTF(g_last_error.c_str());
 }
 
 // One line per compute device ggml can see (CPU + any usable GPU backends),
 // with free/total memory — for the in-app status panel and debug log.
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
+Java_com_techhurts_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
     ggml_backend_load_all();
     std::string out;
     const size_t n = ggml_backend_dev_count();
@@ -273,7 +273,7 @@ Java_com_maxfridbe_ttsrunner_TtsEngine_nDeviceInfo(JNIEnv * env, jclass) {
 // progressCb (may be null) receives (framesDone, framesMax); one frame is
 // 1/12.5 s of audio, so the callback doubles as a live duration estimate.
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_maxfridbe_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
+Java_com_techhurts_ttsrunner_TtsEngine_nGenerate(JNIEnv * env, jclass,
         jstring jtext, jstring jspeaker, jstring jlang, jstring jinstruct,
         jint maxFrames, jint seed, jfloat temp, jfloat topP, jobject progressCb) try {
     if (!g_engine) {
