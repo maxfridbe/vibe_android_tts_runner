@@ -316,6 +316,8 @@ class PlayerActivity : AppCompatActivity() {
             val dur = mp.duration.coerceAtLeast(1)
             val frac = (mp.currentPosition.toFloat() / dur).coerceIn(0f, 1f)
             wave.setProgress(frac)
+            // the top bar doubles as the playback progress bar during replay
+            bar.isIndeterminate = false; bar.max = 1000; bar.progress = (frac * 1000).toInt()
             // keep the moving cursor on screen
             val target = (frac * wave.width - waveScroll.width / 2f).toInt().coerceAtLeast(0)
             waveScroll.smoothScrollTo(target, 0)

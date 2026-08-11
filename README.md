@@ -41,9 +41,11 @@ Cloned from [AndroidBase](https://github.com/maxfridbe/AndroidBase): the build
 is fully containerized, so the host needs only podman or docker — no Android
 SDK, NDK, JDK, or Gradle install.
 
-| Jobs | Speakers | Chats | Hosting | Settings |
-|---|---|---|---|---|
-| ![Jobs](docs/screenshots/jobs.png) | ![Speakers](docs/screenshots/speakers.png) | ![Chats](docs/screenshots/chats.png) | ![Hosting](docs/screenshots/hosting.png) | ![Settings](docs/screenshots/settings.png) |
+| Speakers | Player | Jobs |
+|---|---|---|
+| ![Speakers](docs/screenshots/speakers.png) | ![Player](docs/screenshots/player.png) | ![Jobs](docs/screenshots/jobs.png) |
+| **Chats** | **Hosting** | **Settings** |
+| ![Chats](docs/screenshots/chats.png) | ![Hosting](docs/screenshots/hosting.png) | ![Settings](docs/screenshots/settings.png) |
 
 <sup>Screenshots: Galaxy S24 FE, Android 16.</sup>
 
@@ -82,8 +84,9 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
 2. From any app, share text or an article URL → *Read aloud (TTS Runner)*. The
    extracted text is shown in an editor first, so you can trim whatever the
    readability pass kept before a word is spoken; then Speak, Save, or **Play
-   live** for a player with pause, save and share. Selected text works too, via
-   the text-selection menu.
+   live** for a player that grows the waveform as each chunk is generated and
+   highlights the cleaned-up text line being read, with pause, save and share.
+   Selected text works too, via the text-selection menu.
 3. Or compose at the top of the **Jobs** tab: paste text, pick a speaker,
    Listen or Save.
 4. **Chats** for conversation: a dropdown picks who speaks next, ten expression
@@ -187,7 +190,7 @@ apps/tts-runner/app/src/main/
 │   ├── tts_jni.cpp         # persistent engine: load once, WAV per utterance,
 │   │                       # device pinning, on-device requantization
 │   └── android_posix_shim.h, opencl-headers/, opencl-stub/
-└── kotlin/com/maxfridbe/ttsrunner/
+└── kotlin/com/techhurts/ttsrunner/
     ├── TtsService.kt       # foreground service in a separate ":engine"
     │                       # process (a native crash can't kill the UI);
     │                       # chunk → generate → AudioTrack/AAC pipeline
@@ -197,12 +200,16 @@ apps/tts-runner/app/src/main/
     ├── Chunker.kt          # natural-break splitting (~200 chars ≈ 15 s)
     ├── ModelManager.kt     # catalog, resumable downloads, requantize
     ├── TalkActivity.kt     # a chat as a timeline: drag to reorder, replay all
-    ├── PlayerActivity.kt   # transport for a page being read: pause/save/share
+    ├── PlayerActivity.kt   # transport for a page being read: a waveform that
+    │                       # grows per chunk + the text it follows karaoke-style
+    ├── LiveWaveformView.kt # amplitude bars appended from the growing PCM
+    ├── Icons.kt            # FontAwesome glyphs on buttons (embedded TTF)
     ├── HttpServer.kt       # OpenAI-compatible API + the browser client
     ├── HostingService.kt   # keeps it serving in the background
     ├── SynthBridge.kt      # blocking synthesis for non-UI callers
     ├── SupertonicEngine.kt # the ONNX pipeline (dp → text enc → flow → vocoder)
     ├── VoiceCloner.kt      # on-device style prediction (experimental)
+    ├── RefineEngine.kt     # on-phone CMA-ES polish of a cloned style
     ├── ChatStore.kt / JobStore.kt / VoiceStore.kt / SpeakerFolder.kt
     ├── AudioSaver.kt / AudioShare.kt / Wav.kt / Backends.kt
     └── TtsEngine.kt        # JNI facade

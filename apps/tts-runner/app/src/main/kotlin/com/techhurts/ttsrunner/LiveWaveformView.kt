@@ -67,16 +67,34 @@ class LiveWaveformView(context: Context) : View(context) {
         } catch (_: Exception) { }
     }
 
-    /** Load a finished WAV into bars (replay path, when the pcm is already gone).
-     *  Reads on the caller's thread — callers hand it a background thread. */
+    /** Load a finished WAV into bars — the replay path, and also how the whole
+     *  shape is rebuilt on completion so it includes the final chunk (which
+     *  lands in the WAV after the last live append). Safe to call off the UI
+     *  thread: the file is read on the caller's thread but every view mutation
+     *  is posted back to the UI thread, so a background caller can't trip
+     *  requestLayout()'s thread check and silently wipe the bars. */
     fun loadWav(file: File) {
         try {
             val bytes = file.readBytes()
             if (bytes.size <= 44) return
-            reset()
-            foldSamples(bytes, bytes.size, offset = 44)
-            postInvalidate()
-            post { requestLayout() }
+            val fresh = ArrayList<Int>()
+            var peak = 0
+            var count = 0
+            var i = 44
+            while (i + 1 < bytes.size) {
+                val lo = bytes[i].toInt() and 0xff
+                val hi = bytes[i + 1].toInt()
+                val s = abs((hi shl 8) or lo)
+                if (s > peak) peak = s
+                if (++count >= samplesPerBar) { fresh.add(peak); peak = 0; count = 0 }
+                i += 2
+            }
+            if (count > 0) fresh.add(peak)   // keep the trailing partial bar
+            post {
+                peaks.clear(); peaks.addAll(fresh)
+                readOffset = 0; carryPeak = 0; carryCount = 0; progress = -1f
+                requestLayout(); invalidate()
+            }
         } catch (_: Exception) { }
     }
 
