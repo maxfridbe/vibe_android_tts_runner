@@ -25,7 +25,8 @@ Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
 - **Chats** — conversations you keep. Type a line, hear it immediately, switch
   speaker mid-scene, drag lines into the order you want, replay the whole
   thing or export it as one track. The audio travels with the line, so
-  reordering costs nothing.
+  reordering costs nothing; a *speaker gap* setting tunes the pause between
+  turns (and trims each line's padding), applied to both replay and the export.
 - **Jobs** — compose, listen or render to `Music/TTS Runner/*.m4a` with the
   screen off; history with per-job stats (audio length, generation time, RTF),
   re-run with a different voice, play or share the result.
@@ -114,7 +115,10 @@ inline URLs, emoji and `[17]`-style citations are stripped before speaking.
 ### Cloning a voice for Supertonic
 
 Supertonic's published models contain no speaker encoder. There are two ways
-round that, and they are not equivalent.
+round that, and they are not equivalent. The full methodology — the trained
+graphs, the Python that produces them, and a standalone Rust `clonevoice` CLI
+(wav in, style JSON out, encoder + refine) — lives in its own repo:
+[**vibe_supertonic_voice_cloner**](https://github.com/maxfridbe/vibe_supertonic_voice_cloner).
 
 **On the phone (experimental).** Settings → *On-device voice cloning* downloads
 a set of small ONNX graphs trained for this repo (`models/cloner`, and
