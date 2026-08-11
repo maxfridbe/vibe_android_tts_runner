@@ -201,6 +201,8 @@ class ShareActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TEXT, text)
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, voice.name)
+                .putExtra(TtsService.EXTRA_ENGINE,
+                    if (voice.file.extension.equals("json", true)) "supertonic" else "qwen")
                 .putExtra(TtsService.EXTRA_BACKEND,
                     Backends.current(this, VoiceStore.engineOf(this, voice.name)))
                 .putExtra(TtsService.EXTRA_SAVE, save))

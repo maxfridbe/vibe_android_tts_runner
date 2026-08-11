@@ -67,6 +67,8 @@ class TtsService : Service() {
         const val EXTRA_DESIGN = "design"    // true: no speaker ref — roll a fresh random voice
         const val EXTRA_SEED = "seed"        // base seed; 0 = default
         const val EXTRA_INSTRUCT = "instruct" // voice description (VoiceDesign model)
+        const val EXTRA_ENGINE = "engine"    // "supertonic"|"qwen"; disambiguates a
+                                             // name owned by both a style and a recording
         const val EXTRA_JOB_ID = "job_id"    // resume this job: keep its id and its cached chunks
         const val EXTRA_EPHEMERAL = "ephemeral"  // live Talk lines: speak, but keep out of job history
         /** Absolute path to copy the finished WAV to. Talk keeps one file per
@@ -107,7 +109,7 @@ class TtsService : Service() {
         val text: String, val title: String, val voice: String, val backend: String,
         val save: Boolean, val preview: Boolean, val design: Boolean, val seed: Int,
         val instruct: String, val silent: Boolean, val outPath: String?,
-        val reqId: String, val transient: Boolean)
+        val reqId: String, val transient: Boolean, val engine: String = "")
 
     private val queued = LinkedBlockingQueue<Pending>()
     @Volatile private var drainer: Thread? = null
@@ -243,6 +245,7 @@ class TtsService : Service() {
                 val design = intent.getBooleanExtra(EXTRA_DESIGN, false)
                 val seed = intent.getIntExtra(EXTRA_SEED, 0)
                 val instruct = intent.getStringExtra(EXTRA_INSTRUCT) ?: ""
+                val engineHint = intent.getStringExtra(EXTRA_ENGINE) ?: ""
                 val resumeId = intent.getLongExtra(EXTRA_JOB_ID, 0L)
                 // Talk mode speaks without recording a job
                 val ephemeral = intent.getBooleanExtra(EXTRA_EPHEMERAL, false)
@@ -255,13 +258,14 @@ class TtsService : Service() {
                         design, seed, instruct,
                         intent.getBooleanExtra(EXTRA_SILENT, false),
                         intent.getStringExtra(EXTRA_OUT), intent.getStringExtra(EXTRA_REQ) ?: "",
-                        intent.getBooleanExtra(EXTRA_TRANSIENT, false)))
+                        intent.getBooleanExtra(EXTRA_TRANSIENT, false), engineHint))
                     startInForeground(notif(title, "Queued (${queued.size} waiting)", 0, 0))
                     startDrainer()
                     return START_NOT_STICKY
                 }
                 transientJob = intent.getBooleanExtra(EXTRA_TRANSIENT, false)
-                startJob(text, title, voice, backend, save, preview || ephemeral, design, seed, instruct, resumeId)
+                startJob(text, title, voice, backend, save, preview || ephemeral, design, seed, instruct, resumeId,
+                    engineHint = engineHint)
                 // sticky: if this process is killed mid-save, Android restarts
                 // it and onCreate's auto-resume continues the job
                 return if (save) START_STICKY else START_NOT_STICKY
@@ -313,7 +317,7 @@ class TtsService : Service() {
         update(notif(p.title, "Generating…", 0, 0))
         try {
             runJob(p.text, p.title, p.voice, p.backend, p.save, p.preview, p.design,
-                p.seed, p.instruct)
+                p.seed, p.instruct, engineHint = p.engine)
         } catch (t: Throwable) {
             DebugLog.log(this, "TtsService", "queued job crashed", t)
             fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -324,7 +328,8 @@ class TtsService : Service() {
 
     private fun startJob(text: String, title: String, voiceName: String, backend: String, save: Boolean,
                          preview: Boolean = false, design: Boolean = false, seed: Int = 0,
-                         instruct: String = "", resumeId: Long = 0L, autoResume: Boolean = false) {
+                         instruct: String = "", resumeId: Long = 0L, autoResume: Boolean = false,
+                         engineHint: String = "") {
         // one job at a time; a new share replaces the current playback. The
         // takeover is asynchronous: the previous thread is signalled here and
         // the NEW thread waits for it without a deadline (a 3s join on this
@@ -349,7 +354,7 @@ class TtsService : Service() {
                 previous?.join()
                 stopRequested = false
                 TtsEngine.nResetCancel()
-                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct, resumeId, autoResume)
+                runJob(text, title, voiceName, backend, save, preview, design, seed, instruct, resumeId, autoResume, engineHint)
             } catch (t: Throwable) {
                 DebugLog.log(this, "TtsService", "runJob crashed", t)
                 fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
@@ -377,7 +382,7 @@ class TtsService : Service() {
 
     private fun runJob(text: String, title: String, voiceName: String, backendWanted: String, save: Boolean,
                        preview: Boolean, design: Boolean, seed: Int, instructWanted: String,
-                       resumeId: Long = 0L, autoResume: Boolean = false) {
+                       resumeId: Long = 0L, autoResume: Boolean = false, engineHint: String = "") {
         // crash-loop breaker: if a previous job died without cleaning its
         // marker (native SIGABRT kills this whole process), retry on CPU
         val marker = java.io.File(filesDir, "job-inflight")
@@ -385,9 +390,13 @@ class TtsService : Service() {
         // it we still roll (seed-random voice) on the regular model
         var instruct = if (design) instructWanted else ""
         // The speaker decides the engine, and the engine decides the model —
-        // never a global pick. This is what stops a Qwen speaker's preview
-        // from being synthesised by Supertonic (and vice versa).
-        val needEngine = if (voiceName.isNotBlank()) VoiceStore.engineOf(this, voiceName) else "qwen"
+        // never a global pick. The caller passes the engine explicitly (it
+        // knows the file it tapped); we only fall back to guessing from the
+        // name when it doesn't, and that guess is ambiguous when a recording
+        // and a style share a name — which is the bug the hint fixes.
+        val needEngine = engineHint.ifBlank {
+            if (voiceName.isNotBlank()) VoiceStore.engineOf(this, voiceName) else "qwen"
+        }
         val model = if (design && instruct.isNotBlank()) {
             val vd = ModelManager.designModel(this)
             if (vd == null) {

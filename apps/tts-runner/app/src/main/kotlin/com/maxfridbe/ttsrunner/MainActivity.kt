@@ -523,6 +523,7 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TEXT, text)
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, style)
+                .putExtra(TtsService.EXTRA_ENGINE, "supertonic")
                 .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, "supertonic"))
                 .putExtra(TtsService.EXTRA_SAVE, save))
             ui.postDelayed({ refreshJobsIfChanged() }, 500)
@@ -535,6 +536,7 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, text)
             .putExtra(TtsService.EXTRA_TITLE, title)
             .putExtra(TtsService.EXTRA_VOICE, v.name)
+            .putExtra(TtsService.EXTRA_ENGINE, "qwen")
             .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, "qwen"))
             .putExtra(TtsService.EXTRA_SAVE, save))
         // the engine writes the "running" row from its own process; give it a
@@ -1184,16 +1186,22 @@ class MainActivity : AppCompatActivity() {
         return btn
     }
 
+    /** The engine of a speaker from the file the user tapped — a .json is a
+     *  Supertonic style, anything else a Qwen recording. This is unambiguous
+     *  where the name is not: a recording and a style can share a name. */
+    private fun engineOfVoice(v: VoiceStore.Voice): String =
+        if (v.file.extension.equals("json", true)) "supertonic" else "qwen"
+
     /** The model that will voice this speaker — its engine's, not a global
      *  pick — so previews are cached and played under the right model and a
      *  missing model warns instead of playing the wrong engine. */
     private fun modelFor(v: VoiceStore.Voice): ModelManager.CatalogModel? =
-        ModelManager.modelForEngine(this, VoiceStore.engineOf(this, v.name))
+        ModelManager.modelForEngine(this, engineOfVoice(v))
 
     private fun previewVoice(v: VoiceStore.Voice, btn: ImageButton) {
         val model = modelFor(v)
         if (model == null) {
-            val eng = if (VoiceStore.engineOf(this, v.name) == "supertonic") "Supertonic" else "Qwen"
+            val eng = if (engineOfVoice(v) == "supertonic") "Supertonic" else "Qwen"
             toast("Download a $eng model to hear this speaker (Settings)"); return
         }
         val cached = VoiceStore.previewFile(this, v.name, model.id)
@@ -1206,6 +1214,7 @@ class MainActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, VoiceStore.PREVIEW_TEXT)
             .putExtra(TtsService.EXTRA_TITLE, "Preview: ${v.name}")
             .putExtra(TtsService.EXTRA_VOICE, v.name)
+            .putExtra(TtsService.EXTRA_ENGINE, model.engine)
             .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, model.engine))
             .putExtra(TtsService.EXTRA_PREVIEW, true))
     }

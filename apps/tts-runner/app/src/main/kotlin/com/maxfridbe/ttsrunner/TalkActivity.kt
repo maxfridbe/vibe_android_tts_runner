@@ -335,6 +335,7 @@ class TalkActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, line.text)
             .putExtra(TtsService.EXTRA_TITLE, if (save) line.text.take(40) else "Talk")
             .putExtra(TtsService.EXTRA_VOICE, line.voice)
+            .putExtra(TtsService.EXTRA_ENGINE, if (supertonicSelected()) "supertonic" else "qwen")
             .putExtra(TtsService.EXTRA_BACKEND,
                 Backends.current(this, VoiceStore.engineOf(this, line.voice)))
             .putExtra(TtsService.EXTRA_EPHEMERAL, !save)
