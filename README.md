@@ -8,9 +8,13 @@ phone. Two engines ship side by side — [llama.cpp](https://github.com/ggml-org
 Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
 (99M ONNX, faster than real time, style voices).
 
-- **Speakers** — clone from a recording or record one now, *design* one from a
-  description, or import style files. Every speaker carries its emoji and how
-  fast it answers: ⚡ about a second a sentence, 🐢 tens of seconds.
+- **Speakers** — a tab per engine: ⚡ Supertonic (style files) and 🐢 Qwen
+  (reference recordings). Clone from a recording — trimming it to the section
+  you want on a waveform first — record one now, *design* one from a
+  description, or import styles. There is no global "active model": the speaker
+  you pick decides the engine and the model, and a ★ marks the per-engine
+  default. A cloned voice can be **refined on the phone** to sound closer (a
+  gradient-free search, a few minutes).
 - **Chats** — conversations you keep. Type a line, hear it immediately, switch
   speaker mid-scene, drag lines into the order you want, replay the whole
   thing or export it as one track. The audio travels with the line, so
@@ -87,12 +91,13 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
    by probing the model, not documented upstream), and long-pressing a line
    drags it anywhere in the timeline.
 
-Shared URLs are fetched and run through a readability pass: page furniture
-(nav, share bars, cookie banners, comments, related rails) is dropped, the
-article container is picked by prose length minus twice its link text, and
-everything past *References* / *See also* is ignored. Redirects — including
-`<meta http-equiv=refresh>` stubs — are followed. Markdown noise, inline URLs,
-emoji and `[17]`-style citations are stripped before speaking.
+Shared URLs are fetched and run through [Readability4J](https://github.com/dankito/Readability4J)
+— the Kotlin port of Mozilla's Readability.js, the Firefox Reader View
+algorithm — which drops page furniture (nav, share bars, cookie banners,
+comments, related rails, interleaved newsletter promos) and keeps the article.
+A hand-rolled densest-container heuristic stays as the fallback. Redirects,
+including `<meta http-equiv=refresh>` stubs, are followed; then markdown noise,
+inline URLs, emoji and `[17]`-style citations are stripped before speaking.
 
 ## Models
 
@@ -102,12 +107,21 @@ Supertonic's published models contain no speaker encoder. There are two ways
 round that, and they are not equivalent.
 
 **On the phone (experimental).** Settings → *On-device voice cloning* downloads
-an 89 MB encoder pair trained for this repo (`models/cloner`, and
-`docs/on-device-cloning.md` for how). It predicts a style from a recording in
-about a second — and scores **0.22** held-out speaker similarity against
-**0.82** for the desktop route below, so expect a voice in the right family
-rather than the person. The measurements, and what would close the gap, are in
-that document.
+a set of small ONNX graphs trained for this repo (`models/cloner`, and
+`docs/on-device-cloning.md` for how). They predict a style from a recording in
+about a second, with a **choice of two analyzers**: Qwen3-TTS's own speaker
+encoder (preferred in listening — it carries character voices better) or
+ECAPA. The heads are supervised regressors trained through the frozen
+synthesiser on inverted-real-speaker labels; they score **0.43–0.49** held-out
+speaker similarity against **0.82** for the desktop route below — a
+recognisable take on the voice rather than the person.
+
+Then a cloned style can be **refined on the phone**: a forward-only search
+(separable CMA-ES, `tooling/cma_polish.py` ported to Kotlin in `RefineEngine`)
+decodes candidate coefficients through the PCA basis, synthesises a short line,
+embeds it, and hill-climbs the cosine to the reference — a few hundred forward
+passes, no autograd, a few minutes. Gradient inversion can't run on a phone;
+this reaches for the same answer with only the passes the app already runs.
 
 **On a CUDA box (the quality reference).** It can be done offline
 with [Mimocro/supertonic-voice-cloning](https://github.com/Mimocro/supertonic-voice-cloning),
