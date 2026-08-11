@@ -1048,6 +1048,10 @@ class MainActivity : AppCompatActivity() {
             // predicted from it
             if (isStyle) menu.add("Copy to Qwen (preview becomes reference)")
             else if (VoiceCloner.available(this@MainActivity)) menu.add("Clone to a Supertonic voice…")
+            // a cloned style can be polished toward its reference recording,
+            // if that recording is still in the library and the basis is here
+            if (isStyle && RefineEngine.available(this@MainActivity) && refFor(v) != null)
+                menu.add("Refine to sound closer (a few min)")
             menu.add("Save to folder…")
             menu.add("Edit…")
             menu.add("Delete")
@@ -1055,6 +1059,7 @@ class MainActivity : AppCompatActivity() {
                 when (it.title) {
                     "Share as a file" -> shareSpeaker(v)
                     "Clone to a Supertonic voice…" -> cloneToSupertonic(v)
+                    "Refine to sound closer (a few min)" -> refineVoice(v)
                     "Copy to Qwen (preview becomes reference)" -> {
                         val p = VoiceStore.previewFile(this@MainActivity, v.name, modelFor(v)?.id ?: "none")
                         if (!p.exists()) {
@@ -1159,6 +1164,67 @@ class MainActivity : AppCompatActivity() {
                         .setPositiveButton("OK", null)
                         .show()
                 }
+            }
+        }
+    }
+
+    /** The reference recording a cloned style was made from, if it is still in
+     *  the library — the target the refine polishes toward. Read from the
+     *  style's own metadata; null when the recording is gone. */
+    private fun refFor(v: VoiceStore.Voice): VoiceStore.Voice? {
+        val ref = runCatching {
+            org.json.JSONObject(v.file.readText()).optJSONObject("metadata")?.optString("reference")
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        val stem = ref.substringBeforeLast('.')
+        return VoiceStore.list(this).find { it.file.name == ref || it.name == stem }
+    }
+
+    /** Runs the forward-only CMA polish on a cloned style against its reference
+     *  recording, on a background thread with a cancelable progress dialog and
+     *  a wake lock (it is minutes of synthesis). Saves the result as a new
+     *  voice so the original is never lost. */
+    private fun refineVoice(v: VoiceStore.Voice) {
+        val ref = refFor(v) ?: run { toast("The reference recording for this voice is gone"); return }
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000; isIndeterminate = false
+        }
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Refining “${v.name}”")
+            .setMessage("Searching for a closer match to ${ref.name}. This runs a few " +
+                "minutes of synthesis on the phone — keep the app open.")
+            .setView(bar)
+            .setNegativeButton("Stop") { _, _ -> cancelled.set(true) }
+            .setCancelable(false)
+            .create()
+        dialog.show()
+        val wake = getSystemService(android.os.PowerManager::class.java)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ttsrunner:refine")
+            .apply { acquire(20 * 60_000L) }
+        thread {
+            val engine = RefineEngine(this)
+            val result = runCatching {
+                engine.refine(ref.file, v.file,
+                    onProgress = { f -> runOnUiThread { bar.progress = (f * 1000).toInt() } },
+                    alive = { !cancelled.get() })
+            }.getOrNull()
+            engine.close()
+            runCatching { wake.release() }
+            runOnUiThread {
+                dialog.dismiss()
+                if (cancelled.get()) { toast("Refine stopped"); return@runOnUiThread }
+                if (result == null) { toast("Refine failed — see Settings → Copy log"); return@runOnUiThread }
+                val tmp = File(cacheDir, "refined.json").apply { writeText(result.style.toString()) }
+                val out = VoiceStore.importStyle(this, tmp, "${v.name} (refined)")
+                rebuildVoices()
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Refined: ${out.name}")
+                    .setMessage("Similarity to ${ref.name} went from " +
+                        "${"%.2f".format(result.startCos)} to ${"%.2f".format(result.endCos)} " +
+                        "over ${result.evals} tries. Saved as a new voice — play both and keep " +
+                        "the one you like.")
+                    .setPositiveButton("OK", null)
+                    .show()
             }
         }
     }

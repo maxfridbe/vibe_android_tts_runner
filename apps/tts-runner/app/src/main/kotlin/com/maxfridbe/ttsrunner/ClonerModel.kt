@@ -25,6 +25,7 @@ object ClonerModel {
         VoiceCloner.QSTYLE_ASSET to 9_648_866L,   // retrained on 187 pairs, 0.375 -> 0.429
         VoiceCloner.SPK_ASSET to 84_084_349L,
         VoiceCloner.STYLE_ASSET to 8_404_363L,
+        RefineEngine.BASIS_ASSET to 6_671_388L,   // PCA basis for the on-device refine
     )
 
     val totalBytes: Long get() = FILES.sumOf { it.second }
