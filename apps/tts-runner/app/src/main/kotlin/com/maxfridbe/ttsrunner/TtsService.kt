@@ -384,14 +384,18 @@ class TtsService : Service() {
         // a design job with a description needs the VoiceDesign model; without
         // it we still roll (seed-random voice) on the regular model
         var instruct = if (design) instructWanted else ""
+        // The speaker decides the engine, and the engine decides the model —
+        // never a global pick. This is what stops a Qwen speaker's preview
+        // from being synthesised by Supertonic (and vice versa).
+        val needEngine = if (voiceName.isNotBlank()) VoiceStore.engineOf(this, voiceName) else "qwen"
         val model = if (design && instruct.isNotBlank()) {
             val vd = ModelManager.designModel(this)
             if (vd == null) {
                 broadcast("note", 0, 0, "VoiceDesign model not installed — rolling a random voice instead")
                 instruct = ""
-                ModelManager.selectedModel(this)
+                ModelManager.modelForEngine(this, "qwen")
             } else vd
-        } else ModelManager.selectedModel(this)
+        } else ModelManager.modelForEngine(this, needEngine)
         if (model == null) {
             val have = ModelManager.CATALOG.joinToString(", ") {
                 "${it.id}=${ModelManager.isDownloaded(this, it)}"
@@ -401,8 +405,9 @@ class TtsService : Service() {
                 "$n=${java.io.File(stDir, n).exists()}"
             }
             DebugLog.log(this, "TtsService",
-                "no model selected; downloaded: $have\n  dir=$stDir\n  $detail")
-            fail("No model downloaded — open TTS Runner first"); return
+                "no $needEngine model; downloaded: $have\n  dir=$stDir\n  $detail")
+            fail("No ${if (needEngine == "supertonic") "Supertonic" else "Qwen"} model " +
+                "downloaded — get one in Settings"); return
         }
         // Backends: cpu | opencl | vulkan. OpenCL (Adreno) is only worthwhile
         // with Q4_0 (tuned kernels, 1.7x talker speedup; other quants hit

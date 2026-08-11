@@ -230,16 +230,19 @@ class TalkActivity : AppCompatActivity() {
 
         setContentView(col)
 
-        if (ModelManager.selectedModel(this)?.engine != "supertonic") {
+        if (ModelManager.modelForEngine(this, "supertonic") == null) {
             Toast.makeText(this,
-                "Talk needs Supertonic (Settings → Model) — the 1.7B model is far too slow for live speech",
+                "Talk is best with Supertonic (Settings → Models) — the 1.7B Qwen model is " +
+                "far too slow for live speech",
                 Toast.LENGTH_LONG).show()
         }
         setupVoices(intent.getStringExtra(EXTRA_VOICE))
         render()
     }
 
-    private fun supertonicSelected() = ModelManager.selectedModel(this)?.engine == "supertonic"
+    /** Talk prefers the fast Supertonic engine; it falls back to Qwen only if
+     *  no Supertonic model is installed (and it will be slow). */
+    private fun supertonicSelected() = ModelManager.modelForEngine(this, "supertonic") != null
 
     /** Speakers the loaded model can actually use. */
     private fun voicesForModel(): List<String> =
@@ -332,7 +335,8 @@ class TalkActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, line.text)
             .putExtra(TtsService.EXTRA_TITLE, if (save) line.text.take(40) else "Talk")
             .putExtra(TtsService.EXTRA_VOICE, line.voice)
-            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
+            .putExtra(TtsService.EXTRA_BACKEND,
+                Backends.current(this, VoiceStore.engineOf(this, line.voice)))
             .putExtra(TtsService.EXTRA_EPHEMERAL, !save)
             .putExtra(TtsService.EXTRA_OUT, out.absolutePath)
             .putExtra(TtsService.EXTRA_SAVE, save))

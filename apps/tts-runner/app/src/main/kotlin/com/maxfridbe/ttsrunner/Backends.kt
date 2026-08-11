@@ -39,9 +39,11 @@ object Backends {
         return id?.takeIf { s -> options(engine).any { it.id == s } } ?: "cpu"
     }
 
-    /** The backend for whatever model is selected right now. */
-    fun current(ctx: Context): String =
-        current(ctx, ModelManager.selectedModel(ctx)?.engine ?: "llama")
+    /** Backend for a model whose engine we do not have in hand — the compute
+     *  preference is stored per engine (llama vs onnx), so this reads the
+     *  llama.cpp side, which is the only one with a GPU/CPU choice worth
+     *  remembering globally. Callers with a speaker in hand pass its engine. */
+    fun current(ctx: Context): String = current(ctx, "llama")
 
     fun set(ctx: Context, engine: String, id: String) {
         ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)

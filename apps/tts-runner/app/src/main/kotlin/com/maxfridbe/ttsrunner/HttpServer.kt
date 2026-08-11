@@ -138,7 +138,7 @@ class HttpServer(private val ctx: Context, val port: Int) {
             path == "/health" ->
                 respond(out, 200, "application/json", JSONObject()
                     .put("ok", true)
-                    .put("model", ModelManager.selectedModel(ctx)?.id ?: "")
+                    .put("model", ModelManager.anyModel(ctx)?.id ?: "")
                     .put("requests", requests)
                     .toString().toByteArray())
 
@@ -153,16 +153,21 @@ class HttpServer(private val ctx: Context, val port: Int) {
             }
 
             path == "/v1/audio/voices" -> {
-                val supertonic = ModelManager.selectedModel(ctx)?.engine == "supertonic"
                 val data = JSONArray()
-                val voices = if (supertonic) VoiceStore.styleList(ctx) else VoiceStore.list(ctx)
+                // every voice whose engine has a model, each tagged with its own
+                // kind/speed — the client no longer depends on a global model
+                val voices = buildList {
+                    if (ModelManager.modelForEngine(ctx, "supertonic") != null)
+                        addAll(VoiceStore.styleList(ctx))
+                    if (ModelManager.modelForEngine(ctx, "qwen") != null)
+                        addAll(VoiceStore.list(ctx))
+                }
                 voices.forEach {
+                    val style = VoiceStore.isStyle(ctx, it.name)
                     data.put(JSONObject().put("id", it.name).put("name", it.name)
-                        .put("kind", if (supertonic) "style" else "reference")
-                        // the browser client names speakers the way the app
-                        // does: their emoji, and how fast they answer
+                        .put("kind", if (style) "style" else "reference")
                         .put("icon", VoiceStore.icon(ctx, it.name))
-                        .put("fast", supertonic))
+                        .put("fast", style))
                 }
                 respond(out, 200, "application/json",
                     JSONObject().put("object", "list").put("data", data).toString().toByteArray())
@@ -182,11 +187,17 @@ class HttpServer(private val ctx: Context, val port: Int) {
         if (text.isEmpty()) return error(out, 400, "input is empty")
         if (text.length > 8000) return error(out, 400, "input is longer than 8000 characters")
 
-        val supertonic = ModelManager.selectedModel(ctx)?.engine == "supertonic"
-        val known = (if (supertonic) VoiceStore.styleList(ctx) else VoiceStore.list(ctx)).map { it.name }
+        // any voice with a model to run it; the voice decides the engine
+        val known = buildList {
+            if (ModelManager.modelForEngine(ctx, "supertonic") != null)
+                addAll(VoiceStore.styleList(ctx).map { it.name })
+            if (ModelManager.modelForEngine(ctx, "qwen") != null)
+                addAll(VoiceStore.list(ctx).map { it.name })
+        }
         val wanted = body.optString("voice").trim()
         val voice = known.firstOrNull { it.equals(wanted, true) }
-            ?: VoiceStore.defaultFor(ctx, supertonic)?.name
+            ?: VoiceStore.defaultVoice(ctx)?.name?.takeIf { it in known }
+            ?: known.firstOrNull()
             ?: return error(out, 400, "no voices on this phone")
         if (wanted.isNotEmpty() && !known.any { it.equals(wanted, true) }) {
             return error(out, 400, "no voice named \"$wanted\"; see /v1/audio/voices")

@@ -131,20 +131,39 @@ object ModelManager {
         File(supertonicDir(ctx), "styles").listFiles { f -> f.extension == "json" }
             ?.sortedBy { it.name } ?: emptyList()
 
-    fun selectedModel(ctx: Context): CatalogModel? {
-        val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
-        val id = prefs.getString("model_id", null)
-        val m = CATALOG.find { it.id == id && !it.designOnly }
-            ?: CATALOG.firstOrNull { !it.designOnly && isDownloaded(ctx, it) }
-        return m?.takeIf { isDownloaded(ctx, it) }
-    }
+    val PLAYABLE_ENGINES = listOf("supertonic", "qwen")
 
     fun designModel(ctx: Context): CatalogModel? =
         CATALOG.find { it.designOnly && isDownloaded(ctx, it) }
 
-    fun selectModel(ctx: Context, id: String) {
-        ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE).edit().putString("model_id", id).apply()
+    fun modelById(ctx: Context, id: String?): CatalogModel? =
+        CATALOG.find { it.id == id }?.takeIf { isDownloaded(ctx, it) }
+
+    /** Downloaded, playable models of one engine — the choices for that engine. */
+    fun downloadedForEngine(ctx: Context, engine: String): List<CatalogModel> =
+        CATALOG.filter { !it.designOnly && it.engine == engine && isDownloaded(ctx, it) }
+
+    /** The model to run for an engine. There is no global "selected model":
+     *  the engine comes from the speaker, and this returns the user's pick
+     *  among that engine's downloads (stored per engine) or the first one, or
+     *  null when nothing of that engine is installed — which is the cue to
+     *  warn instead of silently synthesising with the wrong voice. */
+    fun modelForEngine(ctx: Context, engine: String): CatalogModel? {
+        val have = downloadedForEngine(ctx, engine)
+        val pref = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
+            .getString("model_${engine}", null)
+        return have.find { it.id == pref } ?: have.firstOrNull()
     }
+
+    fun setPreferred(ctx: Context, engine: String, id: String) {
+        ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
+            .edit().putString("model_$engine", id).apply()
+    }
+
+    /** Any installed playable model, engine unknown — for status lines and the
+     *  few spots with no speaker in hand yet. Not a user-facing "selection". */
+    fun anyModel(ctx: Context): CatalogModel? =
+        PLAYABLE_ENGINES.firstNotNullOfOrNull { modelForEngine(ctx, it) }
 
     fun talkerPath(ctx: Context, m: CatalogModel): String = File(modelsDir(ctx), m.talkerFile).absolutePath
     fun mmprojPath(ctx: Context, m: CatalogModel): String = File(modelsDir(ctx), m.mmprojFile).absolutePath

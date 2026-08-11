@@ -377,7 +377,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
 
-    private fun currentModelId() = ModelManager.selectedModel(this)?.id ?: "none"
     private fun prefs() = getSharedPreferences("ttsrunner", MODE_PRIVATE)
 
     // ---- New job ------------------------------------------------------------
@@ -467,9 +466,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshVoiceLabel() {
         if (!::voicePickBtn.isInitialized) return
-        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
         val name = pickedVoice?.takeIf { it in voicesForCurrentModel() }
-            ?: VoiceStore.defaultFor(this, supertonic)?.name
+            ?: VoiceStore.defaultVoice(this)?.name
             ?: voicesForCurrentModel().firstOrNull()
         voicePickBtn.text =
             if (name == null) "Voice: none ▾" else "${VoiceStore.label(this, name)} ▾"
@@ -479,20 +477,23 @@ class MainActivity : AppCompatActivity() {
     private fun voiceLabels(names: List<String>) =
         names.map { VoiceStore.label(this, it) }.toTypedArray()
 
-    /** Voices the selected model can actually speak with: Supertonic uses
-     *  style files, Qwen uses reference recordings. */
-    private fun voicesForCurrentModel(): List<String> {
-        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
-        return if (supertonic) VoiceStore.styleList(this).map { it.name }
-               else VoiceStore.list(this).map { it.name }
+    /** Every speaker that has a model to voice it. No global model gates this
+     *  anymore: a Supertonic style is offered when a Supertonic model is
+     *  installed, a Qwen recording when a Qwen model is — the voice you pick
+     *  decides the engine. */
+    private fun voicesForCurrentModel(): List<String> = buildList {
+        if (ModelManager.modelForEngine(this@MainActivity, "supertonic") != null)
+            addAll(VoiceStore.styleList(this@MainActivity).map { it.name })
+        if (ModelManager.modelForEngine(this@MainActivity, "qwen") != null)
+            addAll(VoiceStore.list(this@MainActivity).map { it.name })
     }
 
     private fun pickVoiceDialog() {
         val names = voicesForCurrentModel()
         if (names.isEmpty()) {
-            toast(if (ModelManager.selectedModel(this)?.engine == "supertonic")
-                      "No style voices — re-download Supertonic in Settings"
-                  else "Import or design a voice first (Voices tab)")
+            toast(if (ModelManager.anyModel(this) == null)
+                      "Download a model first (Settings)"
+                  else "Add a voice on the Speakers tab")
             return
         }
         MaterialAlertDialogBuilder(this)
@@ -505,8 +506,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null): Boolean {
-        val model = ModelManager.selectedModel(this)
-        if (model == null) { toast("Download a model first (Settings tab)"); return false }
+        // engine follows the voice; the voice follows the pick or the default
+        val voice = voiceName ?: pickedVoice ?: VoiceStore.defaultVoice(this)?.name
+        val engine = if (voice != null) VoiceStore.engineOf(this, voice) else "qwen"
+        val model = ModelManager.modelForEngine(this, engine)
+        if (model == null) {
+            toast("Download a ${if (engine == "supertonic") "Supertonic" else "Qwen"} model (Settings)")
+            return false
+        }
         if (model.engine == "supertonic") {
             val style = voiceName?.takeIf { VoiceStore.styleFile(this, it) != null }
                 ?: VoiceStore.defaultFor(this, true)?.name
@@ -516,19 +523,19 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TEXT, text)
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, style)
-                .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
+                .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, "supertonic"))
                 .putExtra(TtsService.EXTRA_SAVE, save))
             ui.postDelayed({ refreshJobsIfChanged() }, 500)
             return true
         }
         val v = voiceName?.let { n -> VoiceStore.list(this).find { it.name == n } } ?: VoiceStore.defaultVoice(this)
-        if (v == null) { toast("Import or design a voice first (Voices tab)"); return false }
+        if (v == null) { toast("Import or design a voice first (Speakers tab)"); return false }
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, text)
             .putExtra(TtsService.EXTRA_TITLE, title)
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
+            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, "qwen"))
             .putExtra(TtsService.EXTRA_SAVE, save))
         // the engine writes the "running" row from its own process; give it a
         // beat, then show it (broadcasts refresh the list from then on)
@@ -592,11 +599,11 @@ class MainActivity : AppCompatActivity() {
     private var pendingCloneName: String = "recording"
 
     /** Which engine's speakers the tab is showing: "supertonic" or "qwen".
-     *  Starts on the selected model's engine — that is the list whose
-     *  speakers are actually pickable right now. */
+     *  Starts on whichever engine has a model installed (Supertonic first,
+     *  since it is the everyday fast one), remembered after the first toggle. */
     private fun speakersEngine(): String =
         prefs().getString("speakers_engine", null)
-            ?: if (ModelManager.selectedModel(this)?.engine == "supertonic") "supertonic" else "qwen"
+            ?: if (ModelManager.modelForEngine(this, "supertonic") != null) "supertonic" else "qwen"
 
     private lateinit var voicesActions: LinearLayout
 
@@ -881,8 +888,9 @@ class MainActivity : AppCompatActivity() {
         adoptSupertonicStyles()
         voicesList.removeAllViews()
         val def = VoiceStore.defaultVoice(this)
-        val modelId = currentModelId()
         val engine = speakersEngine()
+        // each group is one engine, so the preview model is that engine's
+        val groupModelId = ModelManager.modelForEngine(this, engine)?.id ?: "none"
         val styleVoices = VoiceStore.styleList(this)
         val styleDef = VoiceStore.defaultFor(this, true)
 
@@ -950,7 +958,7 @@ class MainActivity : AppCompatActivity() {
                         maxLines = 1
                         ellipsize = android.text.TextUtils.TruncateAt.END
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                    val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
+                    val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, groupModelId).exists()
                     row.addView(previewControl(v, hasPreview))
                     lateinit var moreBtn: ImageButton
                     moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
@@ -997,14 +1005,14 @@ class MainActivity : AppCompatActivity() {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
+                val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, groupModelId).exists()
                 head.addView(previewControl(v, hasPreview))
                 lateinit var moreBtn: ImageButton
                 moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
                 head.addView(moreBtn)
                 addView(head)
                 val bits = mutableListOf("${v.file.length() / 1024} KB")
-                if (!hasPreview) bits.add("no preview for $modelId yet")
+                if (!hasPreview) bits.add("no preview yet")
                 if (VoiceStore.transcriptFile(this@MainActivity, v.name).exists()) bits.add("transcript ✓")
                 addView(TextView(context).apply { text = bits.joinToString(" · "); textSize = 12f; alpha = 0.6f })
             })
@@ -1046,7 +1054,7 @@ class MainActivity : AppCompatActivity() {
                     "Share as a file" -> shareSpeaker(v)
                     "Clone to a Supertonic voice…" -> cloneToSupertonic(v)
                     "Copy to Qwen (preview becomes reference)" -> {
-                        val p = VoiceStore.previewFile(this@MainActivity, v.name, currentModelId())
+                        val p = VoiceStore.previewFile(this@MainActivity, v.name, modelFor(v)?.id ?: "none")
                         if (!p.exists()) {
                             toast("Generate a preview first (▶) — that audio becomes the reference")
                         } else {
@@ -1058,7 +1066,7 @@ class MainActivity : AppCompatActivity() {
                     // the file is what another phone imports; the preview is
                     // what you send someone to let them hear the voice
                     "Share preview audio" -> {
-                        val p = VoiceStore.previewFile(this@MainActivity, v.name, currentModelId())
+                        val p = VoiceStore.previewFile(this@MainActivity, v.name, modelFor(v)?.id ?: "none")
                         if (!p.exists()) toast("Generate a preview first (▶)")
                         else thread {
                             runCatching { AudioShare.shareWavAsM4a(this@MainActivity, p, "Voice ${v.name}") }
@@ -1176,19 +1184,29 @@ class MainActivity : AppCompatActivity() {
         return btn
     }
 
+    /** The model that will voice this speaker — its engine's, not a global
+     *  pick — so previews are cached and played under the right model and a
+     *  missing model warns instead of playing the wrong engine. */
+    private fun modelFor(v: VoiceStore.Voice): ModelManager.CatalogModel? =
+        ModelManager.modelForEngine(this, VoiceStore.engineOf(this, v.name))
+
     private fun previewVoice(v: VoiceStore.Voice, btn: ImageButton) {
-        val cached = VoiceStore.previewFile(this, v.name, currentModelId())
+        val model = modelFor(v)
+        if (model == null) {
+            val eng = if (VoiceStore.engineOf(this, v.name) == "supertonic") "Supertonic" else "Qwen"
+            toast("Download a $eng model to hear this speaker (Settings)"); return
+        }
+        val cached = VoiceStore.previewFile(this, v.name, model.id)
         if (cached.exists()) { playFile(cached.absolutePath, btn); return }
-        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
         previewing = v.name
         rebuildVoices()
-        toast("Generating preview with ${currentModelId()} — plays when ready, then cached")
+        toast("Generating preview with ${model.label} — plays when ready, then cached")
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, VoiceStore.PREVIEW_TEXT)
             .putExtra(TtsService.EXTRA_TITLE, "Preview: ${v.name}")
             .putExtra(TtsService.EXTRA_VOICE, v.name)
-            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
+            .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, model.engine))
             .putExtra(TtsService.EXTRA_PREVIEW, true))
     }
 
@@ -1299,7 +1317,7 @@ class MainActivity : AppCompatActivity() {
     private var designInstruct = ""
 
     private fun designVoiceDialog() {
-        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        if (ModelManager.anyModel(this) == null) { toast("Download a model first (Settings)"); return }
         val hasVd = ModelManager.designModel(this) != null
         val edit = EditText(this).apply {
             hint = if (hasVd) "Describe the voice, e.g. “a deep, gravelly old male voice, slow delivery” — or leave empty to roll a random one"
@@ -1353,7 +1371,9 @@ class MainActivity : AppCompatActivity() {
                 val name = edit.text.toString().ifBlank { "designed" }
                 try {
                     val v = VoiceStore.adopt(this, lastAudio(), name)
-                    lastAudio().copyTo(VoiceStore.previewFile(this, v.name, currentModelId()), overwrite = true)
+                    lastAudio().copyTo(
+                        VoiceStore.previewFile(this, v.name, modelFor(v)?.id ?: "none"),
+                        overwrite = true)
                     rebuildVoices()
                     toast("Voice “${v.name}” saved")
                 } catch (e: Exception) { toast("Keep failed: ${e.message}") }
@@ -1738,7 +1758,7 @@ class MainActivity : AppCompatActivity() {
     private fun resumeJob(j: JobStore.Job, backend: String) {
         val v = VoiceStore.list(this).find { it.name == j.voice }
         if (v == null) { toast("Voice “${j.voice}” is gone — use Start over with another voice"); return }
-        if (ModelManager.selectedModel(this) == null) { toast("Download a model first (Settings tab)"); return }
+        if (ModelManager.anyModel(this) == null) { toast("Download a model first (Settings)"); return }
         startForegroundService(Intent(this, TtsService::class.java)
             .setAction(TtsService.ACTION_SPEAK)
             .putExtra(TtsService.EXTRA_TEXT, j.text)
@@ -1963,6 +1983,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelBtn: Button
     private lateinit var modelProgress: ProgressBar
     private lateinit var modelGroup: RadioGroup
+    private lateinit var preferBtn: Button
     private var downloading = false
 
     private fun buildSettingsTab(): View {
@@ -1971,7 +1992,18 @@ class MainActivity : AppCompatActivity() {
         col.caption("v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
 
         col.addView(card {
-            addView(TextView(context).apply { text = "Model"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
+            addView(TextView(context).apply {
+                text = "Models"; textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(context).apply {
+                text = "Download the voices you want. There is no single active model — " +
+                    "the speaker you pick decides which one runs; when an engine has more " +
+                    "than one downloaded, the ✓ marks the one it uses."
+                textSize = 12f; alpha = 0.6f; setPadding(0, dp(2), 0, dp(8))
+            })
+            // radio group is a download TARGET selector, not a global "active
+            // model" — its only job is telling the Download/Remove button which
+            // catalog entry to act on
             modelGroup = RadioGroup(context)
             for ((i, m) in ModelManager.CATALOG.withIndex()) {
                 modelGroup.addView(RadioButton(context).apply { text = m.label; id = i })
@@ -1983,35 +2015,30 @@ class MainActivity : AppCompatActivity() {
             addView(modelProgress)
             modelBtn = Button(context).apply { setOnClickListener { onModelButton() } }
             addView(modelBtn)
-            // checked BEFORE the listener attaches: the initial programmatic
-            // check used to arrive through refreshModelUi with the listener
-            // live, whose rebuild re-entered the build, whose refresh checked
-            // again — a loop that leaked a view tree per lap until the heap
-            // died (36k views, OOM in RadioGroup.check on an S24 FE)
-            val selNow = ModelManager.selectedModel(this@MainActivity)
-            modelGroup.check(ModelManager.CATALOG.indexOfFirst { it.id == selNow?.id }
-                .takeIf { it >= 0 } ?: 0)
-            modelGroup.setOnCheckedChangeListener { _, id ->
-                val engineBefore = ModelManager.selectedModel(this@MainActivity)?.engine
-                ModelManager.CATALOG.getOrNull(id)?.let { ModelManager.selectModel(this@MainActivity, it.id) }
-                refreshModelUi()
-                // the Engine card below belongs to the model: rebuild the tab so
-                // it stops offering llama.cpp backends to Supertonic and back —
-                // but only when the engine actually flips, so a re-check of the
-                // same model can never cycle the build
-                if (ModelManager.selectedModel(this@MainActivity)?.engine != engineBefore) {
-                    ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
+            preferBtn = Button(context, null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                visibility = View.GONE
+                setOnClickListener {
+                    val m = currentModel()
+                    ModelManager.setPreferred(this@MainActivity, m.engine, m.id)
+                    refreshModelUi(); refreshVoiceLabel()
                 }
             }
+            addView(preferBtn)
+            // checked BEFORE the listener attaches (the loop that OOM'd the FE)
+            modelGroup.check(0)
+            modelGroup.setOnCheckedChangeListener { _, _ -> refreshModelUi() }
         })
 
+        // one backend card per engine that has a model, so the compute choice
+        // is set per engine without any global "current model"
+        for (engine in listOf("llama", "supertonic")) {
+            val voiceEngine = if (engine == "supertonic") "supertonic" else "qwen"
+            if (ModelManager.downloadedForEngine(this, voiceEngine).isEmpty()) continue
+            val label = if (engine == "supertonic") "Supertonic (ONNX)" else "Qwen (llama.cpp)"
         col.addView(card {
-            // The engines have different backends, so this card follows the
-            // selected model: offering "Vulkan" to Supertonic meant nothing.
-            val model = ModelManager.selectedModel(this@MainActivity)
-            val engine = model?.engine ?: "llama"
             addView(TextView(context).apply {
-                text = "Engine for ${model?.label ?: "the selected model"}"
+                text = "Compute · $label"
                 textSize = 17f; setTypeface(typeface, Typeface.BOLD)
             })
             val options = Backends.options(engine)
@@ -2055,7 +2082,11 @@ class MainActivity : AppCompatActivity() {
                         ui.post { if (currentTab == TAB_SETTINGS) selectTab(TAB_SETTINGS) }
                     }
                 } else {
-                    val (rec, why) = Backends.recommend(engine, info, model?.gpuCapable ?: false)
+                    // gpuCapable is a property of the Q4_0 model; true if any
+                    // downloaded llama model advertises it
+                    val gpuCapable = ModelManager.downloadedForEngine(this@MainActivity, "qwen")
+                        .any { it.gpuCapable }
+                    val (rec, why) = Backends.recommend(engine, info, gpuCapable)
                     star(rec)
                     detectNote.setOnClickListener(null)
                     detectNote.text = "Detected GPU: ${Backends.gpuName(info)}. Recommended here " +
@@ -2063,17 +2094,19 @@ class MainActivity : AppCompatActivity() {
                         "be resumed on another from the Jobs tab."
                 }
             }
-            val pm = getSystemService(android.os.PowerManager::class.java)
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                addView(Button(context).apply {
-                    text = "Allow background generation (battery)"
-                    setOnClickListener {
-                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                            Uri.parse("package:$packageName")))
-                    }
-                })
-            }
         })
+        }  // per-engine compute cards
+
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            col.addView(Button(this).apply {
+                text = "Allow background generation (battery)"
+                setOnClickListener {
+                    startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")))
+                }
+            })
+        }
 
         col.addView(card {
             addView(TextView(context).apply {
@@ -2175,17 +2208,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshModelUi() {
         if (!::modelGroup.isInitialized) return
-        if (modelGroup.checkedRadioButtonId == -1) {
-            val sel = ModelManager.selectedModel(this)
-            modelGroup.check(ModelManager.CATALOG.indexOfFirst { it.id == sel?.id }.takeIf { it >= 0 } ?: 0)
-            return // listener re-enters
-        }
+        if (modelGroup.checkedRadioButtonId == -1) { modelGroup.check(0); return }
         val m = currentModel()
         val have = ModelManager.isDownloaded(this, m)
-        modelStatus.text = if (have) "Downloaded ✓" else "Not downloaded (${m.totalBytes / 1_000_000} MB)"
+        // ✓ next to each catalog label that is downloaded, and the engine each
+        // one voices so the list reads as "what do I have and what runs what"
+        for ((i, cm) in ModelManager.CATALOG.withIndex()) {
+            (modelGroup.getChildAt(i) as? RadioButton)?.text = buildString {
+                append(cm.label)
+                if (ModelManager.isDownloaded(this@MainActivity, cm)) append("  ✓")
+                if (!cm.designOnly &&
+                    ModelManager.modelForEngine(this@MainActivity, cm.engine)?.id == cm.id)
+                    append(" · in use")
+            }
+        }
+        modelStatus.text = if (have) "Downloaded" else "Not downloaded (${m.totalBytes / 1_000_000} MB)"
         modelProgress.progress = if (have) 100 else 0
         modelBtn.text = if (downloading) "Cancel" else if (have) "Re-download" else
             if (m.quantizeFrom != null) "Get (download + convert)" else "Download"
+        // offer "use this one" only when the engine has a choice to make
+        val peers = ModelManager.downloadedForEngine(this, m.engine)
+        preferBtn.visibility = if (have && !m.designOnly && peers.size > 1 &&
+            ModelManager.modelForEngine(this, m.engine)?.id != m.id) View.VISIBLE else View.GONE
+        preferBtn.text = "Use ${m.label} for ${if (m.engine == "supertonic") "Supertonic" else "Qwen"}"
     }
 
     private fun onModelButton() {

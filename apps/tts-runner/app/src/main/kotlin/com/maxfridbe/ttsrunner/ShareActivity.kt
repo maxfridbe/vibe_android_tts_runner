@@ -160,29 +160,28 @@ class ShareActivity : AppCompatActivity() {
         }
     }
 
-    /** The engines take different kinds of voice — Supertonic reads style
-     *  JSONs, Qwen reads reference recordings — so the picker has to follow the
-     *  selected model. Listing only recordings left this dialog empty (and
-     *  Speak greyed out) for anyone running Supertonic. */
-    private fun voiceList(): List<VoiceStore.Voice> {
-        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
-        return if (supertonic) VoiceStore.styleList(this) else VoiceStore.list(this)
+    /** Every speaker with a model to voice it — Supertonic styles when a
+     *  Supertonic model is installed, Qwen recordings when a Qwen one is. No
+     *  global model gates this; the voice picked decides the engine. */
+    private fun voiceList(): List<VoiceStore.Voice> = buildList {
+        if (ModelManager.modelForEngine(this@ShareActivity, "supertonic") != null)
+            addAll(VoiceStore.styleList(this@ShareActivity))
+        if (ModelManager.modelForEngine(this@ShareActivity, "qwen") != null)
+            addAll(VoiceStore.list(this@ShareActivity))
     }
 
     private fun populateVoices() {
         val list = voiceList()
         if (list.isEmpty()) {
-            val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
-            status.text = if (supertonic)
-                "No Supertonic speakers yet — open TTS Runner and import a style"
-            else "No voices yet — open TTS Runner and import one first"
+            status.text = if (ModelManager.anyModel(this) == null)
+                "No model yet — open TTS Runner and download one"
+            else "No voices yet — open TTS Runner and add a speaker"
             return
         }
-        val supertonic = ModelManager.selectedModel(this)?.engine == "supertonic"
-        val def = VoiceStore.defaultFor(this, supertonic)
+        val def = VoiceStore.defaultVoice(this)
         for ((i, v) in list.withIndex()) {
             voices.addView(RadioButton(this).apply {
-                text = VoiceStore.label(this@ShareActivity, v.name, supertonic)
+                text = VoiceStore.label(this@ShareActivity, v.name)
                 id = i
                 isChecked = v.name == def?.name
             })
@@ -194,8 +193,7 @@ class ShareActivity : AppCompatActivity() {
         val text = editor.text.toString().trim()
         if (text.isBlank()) { status.text = "Nothing to read"; return }
         val voice = voiceList().getOrNull(voices.checkedRadioButtonId) ?: return
-        VoiceStore.setDefaultFor(this, voice,
-            ModelManager.selectedModel(this)?.engine == "supertonic")
+        VoiceStore.setDefaultFor(this, voice, VoiceStore.isStyle(this, voice.name))
         val title = cleaned?.title ?: "Shared text"
         startForegroundService(
             Intent(this, TtsService::class.java)
@@ -203,7 +201,8 @@ class ShareActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TEXT, text)
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, voice.name)
-                .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this))
+                .putExtra(TtsService.EXTRA_BACKEND,
+                    Backends.current(this, VoiceStore.engineOf(this, voice.name)))
                 .putExtra(TtsService.EXTRA_SAVE, save))
         // "Play live" hands the reader a transport instead of dropping them
         // back into the page they shared from with audio coming out of nowhere

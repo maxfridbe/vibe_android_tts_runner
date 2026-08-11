@@ -160,6 +160,11 @@ object VoiceStore {
     /** Whether a name refers to a style file (fast) rather than a recording. */
     fun isStyle(ctx: Context, name: String): Boolean = styleFile(ctx, name) != null
 
+    /** The engine a speaker needs: a style file is Supertonic, a reference
+     *  recording is Qwen. This is what decides the model, not any global pick. */
+    fun engineOf(ctx: Context, name: String): String =
+        if (isStyle(ctx, name)) "supertonic" else "qwen"
+
     fun label(ctx: Context, name: String): String = label(ctx, name, isStyle(ctx, name))
 
     private fun previewsDir(ctx: Context) = File(ctx.filesDir, "previews").apply { mkdirs() }

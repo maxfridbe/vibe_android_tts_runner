@@ -47,7 +47,8 @@ object SynthBridge {
                     .putExtra(TtsService.EXTRA_TEXT, text)
                     .putExtra(TtsService.EXTRA_TITLE, "API request")
                     .putExtra(TtsService.EXTRA_VOICE, voice)
-                    .putExtra(TtsService.EXTRA_BACKEND, Backends.current(ctx))
+                    .putExtra(TtsService.EXTRA_BACKEND,
+                        Backends.current(ctx, VoiceStore.engineOf(ctx, voice)))
                     // a real job while it runs, so it is visible and resumable,
                     // and removed the moment it succeeds
                     .putExtra(TtsService.EXTRA_QUEUE, true)
