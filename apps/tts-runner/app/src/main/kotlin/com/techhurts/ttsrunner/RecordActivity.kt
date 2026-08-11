@@ -139,25 +139,25 @@ class RecordActivity : AppCompatActivity() {
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         recordBtn = Button(this).apply {
-            text = "Record"
+            text = Icons.label(context, Icons.MIC, "Record")
             setOnClickListener { if (recording) stopRecording() else startRecording() }
         }
         buttons.addView(recordBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         playBtn = Button(this).apply {
-            text = "Play"; isEnabled = wavFile().exists()
+            text = Icons.label(context, Icons.PLAY, "Play"); isEnabled = wavFile().exists()
             setOnClickListener { togglePlayback() }
         }
         buttons.addView(playBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             .apply { marginStart = dp(6) })
         saveBtn = Button(this).apply {
-            text = "Save voice"; isEnabled = wavFile().exists()
+            text = Icons.label(context, Icons.SAVE, "Save voice"); isEnabled = wavFile().exists()
             setOnClickListener { saveDialog() }
         }
         buttons.addView(saveBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             .apply { marginStart = dp(6) })
         col.addView(buttons)
         col.addView(Button(this).apply {
-            text = "Edit the passage"
+            text = Icons.label(context, Icons.EDIT, "Edit the passage")
             setOnClickListener { editDialog() }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
@@ -286,7 +286,7 @@ class RecordActivity : AppCompatActivity() {
             }
         }
         recording = true
-        recordBtn.text = "Stop"
+        recordBtn.text = Icons.label(this, Icons.STOP, "Stop")
         playBtn.isEnabled = false
         saveBtn.isEnabled = false
         rec.startRecording()
@@ -335,7 +335,7 @@ class RecordActivity : AppCompatActivity() {
 
     private fun stopRecording() {
         recording = false
-        recordBtn.text = "Record again"
+        recordBtn.text = Icons.label(this, Icons.MIC, "Record again")
         runCatching { recorder?.stop() }
         runCatching { recorder?.release() }
         recorder = null
@@ -371,7 +371,7 @@ class RecordActivity : AppCompatActivity() {
                 setOnCompletionListener { stopPlayback() }
                 start()
             }
-            playBtn.text = "Stop playback"
+            playBtn.text = Icons.label(this, Icons.STOP, "Stop playback")
         } catch (e: Exception) {
             Toast.makeText(this, "Playback failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
@@ -380,7 +380,7 @@ class RecordActivity : AppCompatActivity() {
     private fun stopPlayback() {
         player?.let { runCatching { it.stop() }; it.release() }
         player = null
-        playBtn.text = "Play"
+        playBtn.text = Icons.label(this, Icons.PLAY, "Play")
     }
 
     private fun saveDialog() {

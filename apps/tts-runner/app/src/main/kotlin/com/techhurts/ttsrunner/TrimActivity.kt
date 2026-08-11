@@ -58,11 +58,11 @@ class TrimActivity : AppCompatActivity() {
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val playBtn = Button(this).apply {
-            text = "Play selection"; isEnabled = false
+            text = Icons.label(context, Icons.PLAY, "Play selection"); isEnabled = false
             setOnClickListener { playSelection() }
         }
         val useBtn = Button(this).apply {
-            text = "Use selection"; isEnabled = false
+            text = Icons.label(context, Icons.CHECK, "Use selection"); isEnabled = false
             setOnClickListener { useSelection() }
         }
         row.addView(playBtn, LinearLayout.LayoutParams(0,

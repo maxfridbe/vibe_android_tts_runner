@@ -409,7 +409,7 @@ class MainActivity : AppCompatActivity() {
             // live mode lives on the Speakers tab now: you start it as a
             // particular speaker, which is a choice about the voice, not the job
             actions.addView(Button(context).apply {
-                text = "Play live"
+                text = Icons.label(context, Icons.PLAY, "Play live")
                 setOnClickListener {
                     val text = jobText.text.toString()
                     if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
@@ -423,7 +423,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             actions.addView(Button(context).apply {
-                text = "Add job"
+                text = Icons.label(context, Icons.PLUS, "Add job")
                 setOnClickListener {
                     val text = jobText.text.toString()
                     if (text.isBlank()) { toast("Nothing to read"); return@setOnClickListener }
@@ -451,7 +451,7 @@ class MainActivity : AppCompatActivity() {
         etaText = TextView(this).apply { textSize = 12f; alpha = 0.7f }
         line.addView(etaText)
         stopBtn = Button(this).apply {
-            text = "Stop"
+            text = Icons.label(context, Icons.STOP, "Stop")
             visibility = View.GONE
             setOnClickListener {
                 startService(Intent(this@MainActivity, TtsService::class.java).setAction(TtsService.ACTION_STOP))
@@ -469,8 +469,8 @@ class MainActivity : AppCompatActivity() {
         val name = pickedVoice?.takeIf { it in voicesForCurrentModel() }
             ?: VoiceStore.defaultVoice(this)?.name
             ?: voicesForCurrentModel().firstOrNull()
-        voicePickBtn.text =
-            if (name == null) "Voice: none ▾" else "${VoiceStore.label(this, name)} ▾"
+        voicePickBtn.text = Icons.label(this, Icons.MIC,
+            if (name == null) "Voice: none ▾" else "${VoiceStore.label(this, name)} ▾")
     }
 
     /** "⚡ 🦊 Dale" labels for the picker dialogs, in list order. */
@@ -690,7 +690,7 @@ class MainActivity : AppCompatActivity() {
             "the audio already generated for each one.")
 
         col.addView(Button(this).apply {
-            text = "New chat"
+            text = Icons.label(context, Icons.PLUS, "New chat")
             setOnClickListener { openChat(null) }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -901,17 +901,17 @@ class MainActivity : AppCompatActivity() {
         // designed voices are Qwen material
         if (::voicesActions.isInitialized) {
             voicesActions.removeAllViews()
-            fun action(label: String, onClick: (View) -> Unit) {
+            fun action(glyph: String, label: String, onClick: (View) -> Unit) {
                 voicesActions.addView(Button(this).apply {
-                    text = label
+                    text = Icons.label(context, glyph, label)
                     setOnClickListener(onClick)
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     if (voicesActions.childCount > 0) marginStart = dp(6)
                 })
             }
             if (engine == "supertonic") {
-                action("Clone ▾") { supertonicCloneMenu(it) }
-                action("Import style…") {
+                action(Icons.CLONE, "Clone ▾") { supertonicCloneMenu(it) }
+                action(Icons.IMPORT, "Import style…") {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT)
                         .addCategory(Intent.CATEGORY_OPENABLE)
                         .setType("*/*")
@@ -919,11 +919,11 @@ class MainActivity : AppCompatActivity() {
                         .putExtra(Intent.EXTRA_MIME_TYPES,
                             arrayOf("application/json", "text/json")), REQ_IMPORT)
                 }
-                action("Backup ▾") { filesMenu(it) }
+                action(Icons.FOLDER, "Backup ▾") { filesMenu(it) }
             } else {
-                action("Add ▾") { cloneMenu(it) }
-                action("Design") { designVoiceDialog() }
-                action("Backup ▾") { filesMenu(it) }
+                action(Icons.PLUS, "Add ▾") { cloneMenu(it) }
+                action(Icons.WAND, "Design") { designVoiceDialog() }
+                action(Icons.FOLDER, "Backup ▾") { filesMenu(it) }
             }
         }
 
@@ -1758,7 +1758,8 @@ class MainActivity : AppCompatActivity() {
                 val cachedChunks = if (running) 0 else JobStore.cachedChunks(this@MainActivity, j.id)
                 if (cachedChunks > 0) {
                     addView(Button(context).apply {
-                        text = "Resume — $cachedChunks${if (j.chunksTotal > 0) "/${j.chunksTotal}" else ""} chunks kept"
+                        text = Icons.label(context, Icons.PLAY,
+                            "Resume — $cachedChunks${if (j.chunksTotal > 0) "/${j.chunksTotal}" else ""} chunks kept")
                         setOnClickListener { resumeDialog(j, cachedChunks) }
                         layoutParams = LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -1767,14 +1768,14 @@ class MainActivity : AppCompatActivity() {
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     addView(Button(context).apply {
-                        text = if (cachedChunks > 0) "Start over" else "Re-run"
+                        text = Icons.label(context, Icons.ROTATE, if (cachedChunks > 0) "Start over" else "Re-run")
                         setOnClickListener {
                             if (cachedChunks > 0) JobStore.jobDir(this@MainActivity, j.id).deleteRecursively()
                             rerunJob(j, j.voice)
                         }
                     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                     addView(Button(context).apply {
-                        text = "Other voice…"
+                        text = Icons.label(context, Icons.MIC, "Other voice…")
                         setOnClickListener {
                             val names = VoiceStore.list(this@MainActivity).map { it.name }
                             if (names.isEmpty()) toast("No voices")
@@ -1828,7 +1829,8 @@ class MainActivity : AppCompatActivity() {
             .create()
         for ((label, id) in options) {
             col.addView(Button(this).apply {
-                text = if (id == j.backend) "$label — same as the failed run" else label
+                text = Icons.label(context, Icons.PLAY,
+                    if (id == j.backend) "$label — same as the failed run" else label)
                 setOnClickListener { dialog.dismiss(); resumeJob(j, id) }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1948,7 +1950,8 @@ class MainActivity : AppCompatActivity() {
             addView(portRow)
 
             addView(Button(context).apply {
-                text = if (up) "Stop server" else "Start server"
+                text = Icons.label(context, if (up) Icons.STOP else Icons.SERVER,
+                    if (up) "Stop server" else "Start server")
                 setOnClickListener {
                     if (HostingService.running) {
                         HostingService.stop(this@MainActivity)
@@ -1979,7 +1982,7 @@ class MainActivity : AppCompatActivity() {
             })
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             row.addView(Button(context).apply {
-                text = "Open"
+                text = Icons.label(context, Icons.GLOBE, "Open")
                 setOnClickListener {
                     if (!HostingService.running) { toast("Start the server first"); return@setOnClickListener }
                     runCatching {
@@ -1988,7 +1991,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Button(context).apply {
-                text = "Copy address"
+                text = Icons.label(context, Icons.COPY, "Copy address")
                 setOnClickListener {
                     (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                         .setPrimaryClip(android.content.ClipData.newPlainText("TTS Runner", base))
@@ -2010,11 +2013,11 @@ class MainActivity : AppCompatActivity() {
             })
             val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             row.addView(Button(context).apply {
-                text = "Share"
+                text = Icons.label(context, Icons.SHARE, "Share")
                 setOnClickListener { shareSpec(base) }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Button(context).apply {
-                text = "Save"
+                text = Icons.label(context, Icons.SAVE, "Save")
                 setOnClickListener {
                     startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT)
                         .addCategory(Intent.CATEGORY_OPENABLE)
@@ -2183,7 +2186,7 @@ class MainActivity : AppCompatActivity() {
         val pm = getSystemService(android.os.PowerManager::class.java)
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             col.addView(Button(this).apply {
-                text = "Allow background generation (battery)"
+                text = Icons.label(context, Icons.INFO, "Allow background generation (battery)")
                 setOnClickListener {
                     startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                         Uri.parse("package:$packageName")))
@@ -2216,7 +2219,8 @@ class MainActivity : AppCompatActivity() {
                     "Experimental: it scores 0.42–0.49 speaker similarity against 0.82 for " +
                     "the desktop cloning tool — a recognisable take on the voice rather than " +
                     "the person themselves."
-                btn.text = if (have) "Remove" else "Download models"
+                btn.text = Icons.label(this@MainActivity, if (have) Icons.TRASH else Icons.DOWNLOAD,
+                    if (have) "Remove" else "Download models")
             }
             btn = Button(context).apply {
                 setOnClickListener {
@@ -2253,7 +2257,7 @@ class MainActivity : AppCompatActivity() {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 addView(Button(context).apply {
-                    text = "Status"
+                    text = Icons.label(context, Icons.INFO, "Status")
                     setOnClickListener {
                         // explicit user action, so the crash guard is lifted first
                         DeviceProbe.retry(this@MainActivity)
@@ -2264,7 +2268,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 addView(Button(context).apply {
-                    text = "Copy log"
+                    text = Icons.label(context, Icons.COPY, "Copy log")
                     setOnClickListener {
                         thread {
                             val report = DebugLog.buildReport(this@MainActivity)
@@ -2277,7 +2281,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
                 addView(Button(context).apply {
-                    text = "Clear log"
+                    text = Icons.label(context, Icons.TRASH, "Clear log")
                     setOnClickListener { DebugLog.clear(this@MainActivity); toast("Log cleared") }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
             })
@@ -2307,13 +2311,18 @@ class MainActivity : AppCompatActivity() {
         }
         modelStatus.text = if (have) "Downloaded" else "Not downloaded (${m.totalBytes / 1_000_000} MB)"
         modelProgress.progress = if (have) 100 else 0
-        modelBtn.text = if (downloading) "Cancel" else if (have) "Re-download" else
-            if (m.quantizeFrom != null) "Get (download + convert)" else "Download"
+        modelBtn.text = when {
+            downloading -> Icons.label(this, Icons.CLOSE, "Cancel")
+            have -> Icons.label(this, Icons.ROTATE, "Re-download")
+            m.quantizeFrom != null -> Icons.label(this, Icons.DOWNLOAD, "Get (download + convert)")
+            else -> Icons.label(this, Icons.DOWNLOAD, "Download")
+        }
         // offer "use this one" only when the engine has a choice to make
         val peers = ModelManager.downloadedForEngine(this, m.engine)
         preferBtn.visibility = if (have && !m.designOnly && peers.size > 1 &&
             ModelManager.modelForEngine(this, m.engine)?.id != m.id) View.VISIBLE else View.GONE
-        preferBtn.text = "Use ${m.label} for ${if (m.engine == "supertonic") "Supertonic" else "Qwen"}"
+        preferBtn.text = Icons.label(this, Icons.CHECK,
+            "Use ${m.label} for ${if (m.engine == "supertonic") "Supertonic" else "Qwen"}")
     }
 
     private fun onModelButton() {

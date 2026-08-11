@@ -80,23 +80,23 @@ class ShareActivity : AppCompatActivity() {
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply {
-            text = "Cancel"
+            text = Icons.label(context, Icons.CLOSE, "Cancel")
             setOnClickListener { finish() }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         saveBtn = Button(this).apply {
-            text = "Save"   // render to Music/TTS Runner/*.m4a in the background
+            text = Icons.label(context, Icons.SAVE, "Save")   // render to Music/TTS Runner/*.m4a in the background
             isEnabled = false
             setOnClickListener { speak(save = true, live = false) }
         }
         buttons.addView(saveBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         speakBtn = Button(this).apply {
-            text = "Speak"
+            text = Icons.label(context, Icons.VOLUME, "Speak")
             isEnabled = false
             setOnClickListener { speak(save = false, live = false) }
         }
         buttons.addView(speakBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         liveBtn = Button(this).apply {
-            text = "Play live"
+            text = Icons.label(context, Icons.PLAY, "Play live")
             isEnabled = false
             setOnClickListener { speak(save = false, live = true) }
         }

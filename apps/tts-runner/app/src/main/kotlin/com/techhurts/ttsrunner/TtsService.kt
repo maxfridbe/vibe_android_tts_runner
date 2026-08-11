@@ -771,7 +771,7 @@ class TtsService : Service() {
             sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)
                 .putExtra("state", "frames").putExtra("chunk", framesDone)
                 .putExtra("total", framesMax).putExtra("permille", permille)
-                .putExtra("eta", etaSecs)
+                .putExtra("eta", etaSecs).putExtra("rate", jobRate)
                 .putExtra("message", ""))
         }
         if (now - lastNotifUpdate > 1500) {
@@ -1010,6 +1010,7 @@ class TtsService : Service() {
         sendBroadcast(Intent(STATUS_BROADCAST).setPackage(packageName)
             .putExtra("state", state).putExtra("chunk", chunk)
             .putExtra("total", total).putExtra("message", message)
+            .putExtra("rate", jobRate)
             .putExtra(EXTRA_REQ, reqId).putExtra(EXTRA_OUT, outPath ?: ""))
     }
 

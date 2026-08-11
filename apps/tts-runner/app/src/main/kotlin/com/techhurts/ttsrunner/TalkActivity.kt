@@ -223,7 +223,7 @@ class TalkActivity : AppCompatActivity() {
         }
         row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(Button(this).apply {
-            text = "Say"
+            text = Icons.label(context, Icons.VOLUME, "Say")
             setOnClickListener { say() }
         })
         col.addView(row)
