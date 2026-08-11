@@ -82,20 +82,29 @@ object TextCleaner {
         return out.joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
     }
 
-    /** Fetch a shared URL and extract readable article text: headline plus the
-     *  prose of the densest, least link-heavy container — a small readability
-     *  pass, since page furniture (nav, share bars, cookie banners, comments,
-     *  related-story rails) is unbearable read aloud. */
+    /** Fetch a shared URL and extract readable article text.
+     *
+     *  Readability4J (Mozilla's Readability.js algorithm, the Firefox Reader
+     *  View one) does the heavy lifting: it scores containers by tag
+     *  semantics, link/text density and article markers, and merges the body
+     *  even when newsletter promos are interleaved with it — cases the old
+     *  densest-container heuristic got wrong (thewalrus.ca returned nothing).
+     *  That heuristic stays as the fallback for the pages Readability chokes
+     *  on, and cleanPlain still does the read-aloud polish either way. */
     private fun fetchArticle(url: String): Cleaned {
         val doc = fetchDoc(url, 0)
-        val title = title(doc)          // before stripping: the h1 often lives in a <header>
-        stripFurniture(doc)
-        val container = bestContainer(doc)
-
-        var body = prose(container)
-        if (body.length < 200) body = prose(doc.body())          // over-eager strip
-        if (body.length < 200) body = doc.body().text()          // last resort
-
+        val article = runCatching {
+            net.dankito.readability4j.Readability4J(url, doc.outerHtml()).parse()
+        }.getOrNull()
+        val title = article?.title?.takeIf { it.isNotBlank() } ?: title(doc)
+        var body = article?.textContent?.trim().orEmpty()
+        if (body.length < 200) {                                  // Readability bailed
+            title(doc)
+            stripFurniture(doc)
+            body = prose(bestContainer(doc))
+            if (body.length < 200) body = prose(doc.body())
+            if (body.length < 200) body = doc.body().text()
+        }
         return Cleaned(title, cleanPlain(listOfNotNull(title, body).joinToString("\n\n")))
     }
 

@@ -90,6 +90,7 @@ android {
 
 dependencies {
     implementation("org.jsoup:jsoup:1.17.2") // article extraction for shared URLs
+    implementation("net.dankito.readability4j:readability4j:1.0.8") // Mozilla Readability.js port
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0") // M3 tabs/nav/cards
     // Supertonic 3 runs as ONNX graphs; this ships the ORT native libs plus the
