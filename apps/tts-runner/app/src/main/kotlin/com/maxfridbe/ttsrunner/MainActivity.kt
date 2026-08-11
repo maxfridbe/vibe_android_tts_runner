@@ -587,30 +587,87 @@ class MainActivity : AppCompatActivity() {
     /** Speaker awaiting a folder pick, or null when exporting the whole library. */
     private var exportOne: VoiceStore.Voice? = null
 
+    /** Name carried across the trim round-trip, from the picked file to the
+     *  speaker the trimmed clip becomes. */
+    private var pendingCloneName: String = "recording"
+
+    /** Which engine's speakers the tab is showing: "supertonic" or "qwen".
+     *  Starts on the selected model's engine — that is the list whose
+     *  speakers are actually pickable right now. */
+    private fun speakersEngine(): String =
+        prefs().getString("speakers_engine", null)
+            ?: if (ModelManager.selectedModel(this)?.engine == "supertonic") "supertonic" else "qwen"
+
+    private lateinit var voicesActions: LinearLayout
+
     private fun buildVoicesTab(): View {
         val (scroll, col) = page()
         col.title("Speakers")
-        col.caption("Two kinds live here: Supertonic style files (⚡ about a second a sentence) and " +
-            "reference recordings for the Qwen models (🐢 tens of seconds). Each section holds the " +
-            "speakers one model can use.")
-        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        topRow.addView(Button(this).apply {
-            text = "Clone ▾"
-            setOnClickListener { cloneMenu(this) }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        topRow.addView(Button(this).apply {
-            text = "Design"
-            setOnClickListener { designVoiceDialog() }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
-        topRow.addView(Button(this).apply {
-            text = "Backup / Restore ▾"
-            setOnClickListener { filesMenu(this) }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
-        col.addView(topRow)
+        col.caption("Each model keeps its own kind of speaker: Supertonic uses style files " +
+            "(⚡ about a second a sentence), the Qwen models use reference recordings " +
+            "(🐢 tens of seconds a sentence).")
+
+        val toggle = com.google.android.material.button.MaterialButtonToggleGroup(this).apply {
+            isSingleSelection = true
+            isSelectionRequired = true
+        }
+        fun tab(idNum: Int, label: String) =
+            com.google.android.material.button.MaterialButton(this, null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                id = idNum; text = label
+            }
+        toggle.addView(tab(1, "⚡ Supertonic"),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        toggle.addView(tab(2, "🐢 Qwen"),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        toggle.check(if (speakersEngine() == "supertonic") 1 else 2)
+        toggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                prefs().edit().putString("speakers_engine",
+                    if (checkedId == 1) "supertonic" else "qwen").apply()
+                rebuildVoices()
+            }
+        }
+        col.addView(toggle, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        voicesActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0)
+        }
+        col.addView(voicesActions)
 
         voicesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, 0) }
         col.addView(voicesList)
         return scroll
+    }
+
+    /** The Supertonic tab's Clone menu: every road that ends in a style file. */
+    private fun supertonicCloneMenu(anchor: View) {
+        val refs = VoiceStore.list(this)
+        android.widget.PopupMenu(this, anchor).apply {
+            menu.add("From a sound file…")
+            menu.add("Record now…")
+            if (refs.isNotEmpty() && VoiceCloner.available(this@MainActivity))
+                menu.add("From a Qwen speaker…")
+            setOnMenuItemClickListener {
+                when (it.title) {
+                    "From a sound file…" -> startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("audio/*"), REQ_CLONE_AUDIO)
+                    "Record now…" -> startActivity(Intent(this@MainActivity, RecordActivity::class.java))
+                    "From a Qwen speaker…" -> MaterialAlertDialogBuilder(this@MainActivity)
+                        .setTitle("Clone which speaker?")
+                        .setItems(refs.map { r -> r.name }.toTypedArray()) { _, i ->
+                            cloneToSupertonic(refs[i])
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+                true
+            }
+            show()
+        }
     }
 
     // ---- Chats tab ---------------------------------------------------------
@@ -715,9 +772,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Both ways to turn a person into a speaker: a recording you already have,
-     *  or one you make now. Either way it lands as a reference voice and is
-     *  cloned into a Supertonic style if the encoder is installed. */
+    /** Both ways to turn a person into a Qwen speaker: a recording you already
+     *  have, or one you make now. It lands as a reference voice, nothing more —
+     *  turning it into a Supertonic style is the Supertonic tab's business. */
     private fun cloneMenu(anchor: View) {
         android.widget.PopupMenu(this, anchor).apply {
             menu.add("From a sound file…")
@@ -803,28 +860,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** A collapsible group. Which one is open is remembered per section, but
-     *  the first time round the model you are actually using decides — that is
-     *  the section whose speakers you can pick right now. */
-    private fun section(key: String, title: String, subtitle: String, count: Int,
-                        defaultOpen: Boolean, body: LinearLayout.() -> Unit) {
-        val open = prefs().getBoolean("sec_$key", defaultOpen)
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(10), 0, dp(6))
-            isClickable = true
-            setOnClickListener {
-                prefs().edit().putBoolean("sec_$key", !open).apply()
-                rebuildVoices()
-            }
-        }
-        header.addView(TextView(this).apply {
-            text = if (open) "▾" else "▸"
-            textSize = 14f; alpha = 0.7f; setPadding(0, 0, dp(8), 0)
-        })
-        header.addView(LinearLayout(this).apply {
+    /** A titled group of speaker cards inside the current engine tab. */
+    private fun group(title: String, subtitle: String, count: Int, body: LinearLayout.() -> Unit) {
+        voicesList.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(6))
             addView(TextView(this@MainActivity).apply {
                 text = "$title  ($count)"
                 textSize = 14f; setTypeface(typeface, Typeface.BOLD)
@@ -832,11 +872,8 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(this@MainActivity).apply {
                 text = subtitle; textSize = 11f; alpha = 0.6f
             })
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        voicesList.addView(header)
-        if (!open) return
-        val holder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; body() }
-        voicesList.addView(holder)
+        })
+        voicesList.addView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; body() })
     }
 
     private fun rebuildVoices() {
@@ -845,12 +882,43 @@ class MainActivity : AppCompatActivity() {
         voicesList.removeAllViews()
         val def = VoiceStore.defaultVoice(this)
         val modelId = currentModelId()
-        val supertonicModel = ModelManager.selectedModel(this)?.engine == "supertonic"
+        val engine = speakersEngine()
         val styleVoices = VoiceStore.styleList(this)
         val styleDef = VoiceStore.defaultFor(this, true)
 
-        section("styles", "⚡ Supertonic 3 speakers", "style files · about a second a sentence",
-                styleVoices.size, defaultOpen = supertonicModel) {
+        // the action row belongs to the engine on show: cloning ends in a
+        // style file, so it lives on the Supertonic side; recordings and
+        // designed voices are Qwen material
+        if (::voicesActions.isInitialized) {
+            voicesActions.removeAllViews()
+            fun action(label: String, onClick: (View) -> Unit) {
+                voicesActions.addView(Button(this).apply {
+                    text = label
+                    setOnClickListener(onClick)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (voicesActions.childCount > 0) marginStart = dp(6)
+                })
+            }
+            if (engine == "supertonic") {
+                action("Clone ▾") { supertonicCloneMenu(it) }
+                action("Import style…") {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT)
+                        .addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType("*/*")
+                        .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                        .putExtra(Intent.EXTRA_MIME_TYPES,
+                            arrayOf("application/json", "text/json")), REQ_IMPORT)
+                }
+                action("Backup ▾") { filesMenu(it) }
+            } else {
+                action("Add ▾") { cloneMenu(it) }
+                action("Design") { designVoiceDialog() }
+                action("Backup ▾") { filesMenu(it) }
+            }
+        }
+
+        if (engine == "supertonic") group("⚡ Supertonic 3 speakers",
+                "style files · about a second a sentence", styleVoices.size) {
             if (styleVoices.isEmpty()) {
                 addView(TextView(context).apply {
                     text = "None yet — import a style file or folder."
@@ -897,8 +965,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val refVoices = VoiceStore.list(this)
-        section("refs", "🐢 Qwen speakers", "reference recordings · tens of seconds a sentence",
-                refVoices.size, defaultOpen = !supertonicModel) {
+        if (engine == "qwen") group("🐢 Qwen speakers",
+                "reference recordings · tens of seconds a sentence", refVoices.size) {
         if (refVoices.isEmpty()) {
             addView(TextView(context).apply {
                 text = "None yet — record, design or import a recording."
@@ -931,11 +999,6 @@ class MainActivity : AppCompatActivity() {
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 val hasPreview = VoiceStore.previewFile(this@MainActivity, v.name, modelId).exists()
                 head.addView(previewControl(v, hasPreview))
-                if (VoiceCloner.available(this@MainActivity)) {
-                    head.addView(iconBtn(R.drawable.ic_add, "Clone to a Supertonic voice") {
-                        cloneToSupertonic(v)
-                    })
-                }
                 lateinit var moreBtn: ImageButton
                 moreBtn = iconBtn(R.drawable.ic_more, "More") { speakerMenu(moreBtn, v) }
                 head.addView(moreBtn)
@@ -1384,20 +1447,35 @@ class MainActivity : AppCompatActivity() {
                 rebuildVoices()
             }
             REQ_CLONE_AUDIO -> data.data?.let { uri ->
+                // trim first: a dropped-in file is often minutes long, and the
+                // cloner wants a clean ~10 s window. TrimActivity returns a
+                // trimmed wav, then REQ_TRIM finishes the import/clone
+                pendingCloneName = displayName(uri, "recording.wav")
+                    .substringBeforeLast('.').ifBlank { "recording" }
+                startActivityForResult(Intent(this, TrimActivity::class.java)
+                    .putExtra(TrimActivity.EXTRA_SOURCE_URI, uri)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), REQ_TRIM)
+            }
+            REQ_TRIM -> data.getStringExtra(TrimActivity.EXTRA_RESULT_PATH)?.let { path ->
                 val v = try {
-                    VoiceStore.import(this, uri, displayName(uri, "recording.wav"))
+                    VoiceStore.importRecording(this, File(path), pendingCloneName)
                 } catch (e: Exception) {
-                    toast("Could not read that file: ${e.message}"); return
+                    toast("Could not save the trimmed clip: ${e.message}"); return
                 }
                 rebuildVoices()
-                if (VoiceCloner.available(this)) cloneToSupertonic(v)
-                else MaterialAlertDialogBuilder(this)
-                    .setTitle("Imported “${v.name}”")
-                    .setMessage("It is usable with the Qwen models as it is. To turn it into a " +
-                        "fast Supertonic speaker, download the cloning encoder in Settings — or " +
-                        "run the desktop cloning tool, which is still much closer to the original.")
-                    .setPositiveButton("OK", null)
-                    .show()
+                // the tab in view is the intent: on the Qwen side a recording
+                // IS the speaker, and the clone dialog was hijacking it
+                when {
+                    speakersEngine() != "supertonic" -> toast("Qwen speaker added: ${v.name}")
+                    VoiceCloner.available(this) -> cloneToSupertonic(v)
+                    else -> MaterialAlertDialogBuilder(this)
+                        .setTitle("Imported “${v.name}”")
+                        .setMessage("It is usable with the Qwen models as it is. To turn it into a " +
+                            "fast Supertonic speaker, download the cloning models in Settings — or " +
+                            "run the desktop cloning tool, which is still much closer to the original.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
             }
             REQ_IMPORT_DIR -> data.data?.let { importFolder(it) }
             REQ_EXPORT_DIR -> data.data?.let { exportFolder(it, exportOne); exportOne = null }
@@ -2141,6 +2219,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_BACKUP_DIR = 14
         private const val REQ_SAVE_SPEC = 15
         private const val REQ_CLONE_AUDIO = 16
+        private const val REQ_TRIM = 17
         private const val TAB_VOICES = 2
         private const val TAB_JOBS = 3
         private const val TAB_SETTINGS = 4

@@ -39,6 +39,11 @@
             android:name=".RecordActivity"
             android:exported="false" />
 
+        <!-- trim a picked recording to a section before it becomes a speaker -->
+        <activity
+            android:name=".TrimActivity"
+            android:exported="false" />
+
         <!-- live conversation mode: type a line, hear it immediately -->
         <activity
             android:name=".TalkActivity"
