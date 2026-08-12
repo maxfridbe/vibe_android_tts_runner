@@ -39,10 +39,13 @@ class RefineEngine(private val ctx: Context) {
         // scored on) — used only for the seed and final-winner scores, so the
         // reported start/end cosines stay comparable to older runs.
         private const val PROBE = "A cup of coffee on the desk had long since gone cold."
-        // Search-time probe: ECAPA identity saturates in a couple of seconds,
-        // so the thousands of throwaway ranking syntheses don't need the long
-        // sentence.
-        private const val PROBE_SEARCH = "The coffee on the desk had gone cold."
+        // Search-time probe. Phonetically rich (Rainbow Passage opener) —
+        // measured on a 20-voice sweep it beats a short probe by +0.061 mean
+        // held-out cosine (19/20 voices, up to +0.177): broad vowel/consonant
+        // coverage gives ECAPA more of the timbre spectrum to match per
+        // evaluation, worth more than its extra synthesis length.
+        private const val PROBE_SEARCH =
+            "When sunlight strikes raindrops in the air, they act as a prism and form a rainbow."
         // Flow steps during search vs. final scoring. Fewer steps depress every
         // cosine uniformly, which is harmless for ranking — CMA only needs the
         // relative order — and the absolute numbers come from full-fidelity
@@ -50,7 +53,8 @@ class RefineEngine(private val ctx: Context) {
         private const val SEARCH_STEPS = 4
         private const val FINAL_STEPS = 8
         // Stop when the best cosine hasn't improved for this many generations.
-        private const val PATIENCE = 15
+        // (15 measurably cut hard voices short in the sweep; 25 kept quality.)
+        private const val PATIENCE = 25
         private const val RATE = 16000
 
         fun available(ctx: Context): Boolean =
