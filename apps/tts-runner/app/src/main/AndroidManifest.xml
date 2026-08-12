@@ -111,10 +111,14 @@
 
         <!-- background "Refine this voice": a long CPU search that must survive
              the screen going off, so it runs foreground with a silent-audio
-             keepalive (media playback) like the save jobs -->
+             keepalive (media playback) like the save jobs.
+             exported=true for the same reason as TtsService: so
+             `adb shell am start-foreground-service` can drive it for automated
+             testing. It only reads paths as itself and writes styles into the
+             app's own voice store; worst case someone burns battery. -->
         <service
             android:name=".RefineService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

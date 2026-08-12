@@ -101,6 +101,100 @@ class SupertonicEngine(private val ctx: Context) {
         }
     }
 
+    // ---- search-path primitives (used by RefineEngine's batched CMA) -------
+
+    /** Latent frames per second-of-audio granularity: samples per latent frame. */
+    val latentChunk: Int get() = baseChunkSize * chunkCompressFactor
+    /** Channel width of the flow's latent. */
+    val latentWidth: Int get() = latentDim * chunkCompressFactor
+
+    /** Text -> unicode indexer ids, the tokenisation generate() uses. */
+    fun probeIds(text: String, lang: String = "en"): LongArray? {
+        val prepared = preprocess(text, lang)
+        if (prepared.isEmpty()) return null
+        return prepared.map { indexer.getOrElse(it) { 0 }.toLong() }.toLongArray()
+    }
+
+    /** Seconds the duration predictor assigns [ids] with this style_dp. */
+    fun probeDuration(ids: LongArray, dpStyle: Array<Array<FloatArray>>, speed: Float = 1.05f): Float? {
+        val e = env ?: return null
+        return try {
+            val idsT = OnnxTensor.createTensor(e, LongBuffer.wrap(ids), longArrayOf(1, ids.size.toLong()))
+            val maskT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(ids.size) { 1f }),
+                longArrayOf(1, 1, ids.size.toLong()))
+            val dpT = tensor3(e, dpStyle)
+            val out = dp!!.run(mapOf("text_ids" to idsT, "style_dp" to dpT, "text_mask" to maskT))
+            @Suppress("UNCHECKED_CAST")
+            val d = (out[0].value as FloatArray)[0] / speed
+            out.close(); idsT.close(); maskT.close(); dpT.close()
+            d
+        } catch (t: Throwable) {
+            DebugLog.log(ctx, "Supertonic", "probeDuration failed", t as? Exception ?: Exception(t))
+            null
+        }
+    }
+
+    /** B candidate styles through text encoder, flow and vocoder as ONE batched
+     *  pass (every graph input carries a dynamic batch dim — current_step and
+     *  total_step included, which must be shaped [B]). The duration is frozen
+     *  by the caller ([latentLen]/[wavLen]) and every candidate shares [noise]
+     *  (common random numbers), so rows are comparable within a generation.
+     *  Returns B float waveforms at [sampleRate], or null if a graph rejects
+     *  the batch. */
+    fun generateBatch(ids: LongArray, ttlsFlat: Array<FloatArray>, ttlRows: Int, ttlCols: Int,
+                      latentLen: Int, wavLen: Int, noise: FloatArray, steps: Int): Array<FloatArray>? {
+        val e = env ?: return null
+        val bn = ttlsFlat.size
+        if (bn == 0) return arrayOf()
+        val b = bn.toLong(); val len = ids.size
+        return try {
+            val idsB = LongArray(len * bn) { ids[it % len] }
+            val maskB = FloatArray(len * bn) { 1f }
+            val ttlB = FloatArray(ttlRows * ttlCols * bn)
+            for (p in 0 until bn) System.arraycopy(ttlsFlat[p], 0, ttlB, p * ttlRows * ttlCols, ttlRows * ttlCols)
+            val idsT = OnnxTensor.createTensor(e, LongBuffer.wrap(idsB), longArrayOf(b, len.toLong()))
+            val maskT = OnnxTensor.createTensor(e, FloatBuffer.wrap(maskB), longArrayOf(b, 1, len.toLong()))
+            val ttlT = OnnxTensor.createTensor(e, FloatBuffer.wrap(ttlB),
+                longArrayOf(b, ttlRows.toLong(), ttlCols.toLong()))
+
+            val encOut = textEnc!!.run(mapOf("text_ids" to idsT, "style_ttl" to ttlT, "text_mask" to maskT))
+            val textEmb = encOut[0] as OnnxTensor
+
+            val lDim = latentWidth
+            val per = lDim * latentLen
+            var xt = FloatArray(per * bn) { noise[it % per] }
+            val latMaskT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(latentLen * bn) { 1f }),
+                longArrayOf(b, 1, latentLen.toLong()))
+            val totalT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(bn) { steps.toFloat() }),
+                longArrayOf(b))
+            for (step in 0 until steps) {
+                val xtT = OnnxTensor.createTensor(e, FloatBuffer.wrap(xt),
+                    longArrayOf(b, lDim.toLong(), latentLen.toLong()))
+                val curT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(bn) { step.toFloat() }),
+                    longArrayOf(b))
+                val out = vecEst!!.run(mapOf(
+                    "noisy_latent" to xtT, "text_emb" to textEmb, "style_ttl" to ttlT,
+                    "text_mask" to maskT, "latent_mask" to latMaskT,
+                    "current_step" to curT, "total_step" to totalT))
+                xt = flatten(out[0].value)
+                out.close(); xtT.close(); curT.close()
+            }
+            val latT = OnnxTensor.createTensor(e, FloatBuffer.wrap(xt),
+                longArrayOf(b, lDim.toLong(), latentLen.toLong()))
+            val wavOut = vocoder!!.run(mapOf("latent" to latT))
+            val wav = flatten(wavOut[0].value)
+            wavOut.close(); latT.close(); encOut.close()
+            idsT.close(); maskT.close(); ttlT.close(); latMaskT.close(); totalT.close()
+
+            val row = wav.size / bn
+            val n = kotlin.math.min(row, max(1, wavLen))
+            Array(bn) { p -> FloatArray(n) { i -> wav[p * row + i] } }
+        } catch (t: Throwable) {
+            DebugLog.log(ctx, "Supertonic", "generateBatch failed (B=$bn)", t as? Exception ?: Exception(t))
+            null
+        }
+    }
+
     /** Generates 16-bit PCM at [sampleRate] for one chunk of text. */
     fun generate(text: String, style: Style, lang: String = "en",
                  steps: Int = 8, speed: Float = 1.05f, seed: Int = 0): ByteArray? {

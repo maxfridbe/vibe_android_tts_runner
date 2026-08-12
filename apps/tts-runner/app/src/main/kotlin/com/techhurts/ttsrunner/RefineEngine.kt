@@ -21,9 +21,13 @@ import kotlin.math.sqrt
  *  this searches the same PCA basis with a gradient-free optimiser
  *  (separable CMA-ES): decode a candidate's coefficients to a style,
  *  synthesise a short line with Supertonic, embed it with ECAPA, score its
- *  cosine to the reference recording — a few hundred forward passes the app
- *  already runs. This is the exact loop `tooling/cma_polish.py` measured
- *  (~0.57 held-out from a ~0.49 start), ported to Kotlin.
+ *  cosine to the reference recording — forward passes the app already runs.
+ *  The search runs at reduced fidelity (short probe, 4 flow steps, each
+ *  generation synthesised as one batched pass with a frozen duration and
+ *  shared noise) and stops early when it plateaus; only the seed and the
+ *  final winner are scored at full fidelity. Same loop as the desktop
+ *  `clonevoice --refine`, where these levers measured ~8× per evaluation
+ *  (see supertonic_voice_cloner/method.md, "Making it faster").
  *
  *  Needs the models the cloner downloads (spk_encoder.onnx + style_basis.bin);
  *  runs on the caller's thread and reports progress by fraction. */
@@ -31,9 +35,22 @@ class RefineEngine(private val ctx: Context) {
 
     companion object {
         const val BASIS_ASSET = "style_basis.bin"
-        // one short, out-of-the-ordinary probe (disjoint from what any head
-        // trained or was scored on) keeps each evaluation ~1 s on phone CPU
+        // Full-fidelity probe (disjoint from what any head trained or was
+        // scored on) — used only for the seed and final-winner scores, so the
+        // reported start/end cosines stay comparable to older runs.
         private const val PROBE = "A cup of coffee on the desk had long since gone cold."
+        // Search-time probe: ECAPA identity saturates in a couple of seconds,
+        // so the thousands of throwaway ranking syntheses don't need the long
+        // sentence.
+        private const val PROBE_SEARCH = "The coffee on the desk had gone cold."
+        // Flow steps during search vs. final scoring. Fewer steps depress every
+        // cosine uniformly, which is harmless for ranking — CMA only needs the
+        // relative order — and the absolute numbers come from full-fidelity
+        // scoring above.
+        private const val SEARCH_STEPS = 4
+        private const val FINAL_STEPS = 8
+        // Stop when the best cosine hasn't improved for this many generations.
+        private const val PATIENCE = 15
         private const val RATE = 16000
 
         fun available(ctx: Context): Boolean =
@@ -52,16 +69,13 @@ class RefineEngine(private val ctx: Context) {
     private var spk: OrtSession? = null
     private var supertonic: SupertonicEngine? = null
 
-    // Each ONNX session has ONE intra-op thread pool shared by all Run() calls,
-    // so overlapping candidate evaluations doesn't multiply cores — it fills the
-    // pool's idle time while another eval is in a serial phase. Keep the full
-    // pool per session and overlap a couple of candidates; true N× would need N
-    // copies of the ~400 MB model, which the phone can't spare. The population
-    // evals are independent (one synth + one embed on thread-safe sessions), so
-    // this is safe.
+    // The whole population is synthesised as ONE batched ORT run per
+    // generation (the graphs have dynamic batch dims), so the sessions get the
+    // full intra-op pool — batching replaces the old two-candidates-in-flight
+    // executor, and the batched GEMMs use the cores far better than
+    // overlapping serial runs did.
     private val cores = Runtime.getRuntime().availableProcessors()
     private val evalThreads = cores.coerceIn(2, 6)
-    val parallelism = 2.coerceAtMost(cores)
 
     private fun loadBasis(): Boolean {
         val f = File(VoiceCloner.dir(ctx), BASIS_ASSET)
@@ -142,22 +156,60 @@ class RefineEngine(private val ctx: Context) {
         }
     }
 
+    /** coeffs -> just the flat, row-normalised ttl half — all the batched
+     *  search synthesis needs (the dp half only sets the duration, which the
+     *  search freezes from the seed). */
+    private fun decodeTtlFlat(c: FloatArray): FloatArray {
+        val flat = FloatArray(split)
+        System.arraycopy(mean, 0, flat, 0, split)
+        for (i in 0 until k) {
+            val cs = c[i] * scale[i]
+            if (cs == 0f) continue
+            val base = i * dTot
+            for (j in 0 until split) flat[j] += cs * basis[base + j]
+        }
+        for (r in 0 until ttlR) {
+            var n = 0f
+            for (col in 0 until ttlC) { val v = flat[r * ttlC + col]; n += v * v }
+            n = sqrt(n) + 1e-8f
+            for (col in 0 until ttlC) flat[r * ttlC + col] /= n
+        }
+        return flat
+    }
+
     // ---- one evaluation: coeffs -> cosine to the target --------------------
 
     private lateinit var target: FloatArray     // reference ECAPA embedding
 
+    /** Full-fidelity cosine (long probe, all flow steps, fresh duration) —
+     *  seed and final winner only, so start/end numbers stay comparable to
+     *  runs from before the batched search. */
     private fun cosineOf(c: FloatArray): Float {
         val style = decode(c)
-        // 8 flow steps = the app's normal synthesis quality; fewer degrades the
-        // ECAPA read and depresses every score. generate() returns raw s16le
-        // mono PCM at the synth's sample rate, not a WAV file.
-        val pcmBytes = supertonic?.generate(PROBE, style, steps = 8) ?: return -1f
+        val pcmBytes = supertonic?.generate(PROBE, style, steps = FINAL_STEPS) ?: return -1f
         val srcRate = supertonic?.sampleRate ?: 44100
         val pcm = pcm16ToMono16k(pcmBytes, srcRate) ?: return -1f
-        val emb = embedPcm(pcm) ?: return -1f
+        return score(pcm)
+    }
+
+    private fun score(pcm16k: FloatArray): Float {
+        val emb = embedPcm(pcm16k) ?: return -1f
         var dot = 0f
         for (i in emb.indices) dot += emb[i] * target[i]
         return dot                              // both unit-norm out of spk_encoder
+    }
+
+    /** Float wav at [srcRate] -> 16 kHz (linear), for the batched search path. */
+    private fun floatToMono16k(wav: FloatArray, srcRate: Int): FloatArray? {
+        if (wav.size < 2) return null
+        if (srcRate == RATE) return wav
+        val outN = (wav.size.toLong() * RATE / srcRate).toInt()
+        if (outN <= 1) return null
+        return FloatArray(outN) { i ->
+            val xf = i.toDouble() * (wav.size - 1) / (outN - 1)
+            val i0 = xf.toInt().coerceAtMost(wav.size - 1); val i1 = (i0 + 1).coerceAtMost(wav.size - 1)
+            val tt = (xf - i0).toFloat(); wav[i0] * (1 - tt) + wav[i1] * tt
+        }
     }
 
     /** Raw 16-bit LE mono PCM at [srcRate] -> float at 16 kHz. */
@@ -188,11 +240,13 @@ class RefineEngine(private val ctx: Context) {
         }
     }
 
-    /** Minimise f. Returns the best coeffs found. Reports progress 0..1 and
-     *  bails early when [alive] turns false (user cancelled). */
+    /** Minimise f, which scores a whole population per call (one batched
+     *  synthesis). Returns the best coeffs found. Reports progress 0..1, stops
+     *  after [PATIENCE] generations without improvement, and bails early when
+     *  [alive] turns false (user cancelled). */
     private fun sepCma(x0: FloatArray, sigma0: Float, iters: Int, pop: Int,
-                       f: (FloatArray) -> Float, onProgress: (Float) -> Unit,
-                       alive: () -> Boolean, exec: java.util.concurrent.ExecutorService): FloatArray {
+                       f: (Array<FloatArray>) -> FloatArray, onProgress: (Float) -> Unit,
+                       alive: () -> Boolean): FloatArray {
         val n = x0.size
         val mu = pop / 2
         val w = FloatArray(mu) { ln(mu + 0.5f) - ln((it + 1).toFloat()) }
@@ -208,20 +262,19 @@ class RefineEngine(private val ctx: Context) {
 
         val m = x0.copyOf(); var sigma = sigma0
         val C = FloatArray(n) { 1f }; val ps = FloatArray(n); val pc = FloatArray(n)
-        var bestX = x0.copyOf(); var bestF = f(x0)
-        val evals = java.util.concurrent.atomic.AtomicInteger(1)
+        var bestX = x0.copyOf(); var bestF = f(arrayOf(x0.copyOf()))[0]
+        var done = 1
+        var lastGain = 0
         val total = 1 + iters * pop
         for (g in 0 until iters) {
             if (!alive()) break
             val z = Array(pop) { FloatArray(n) { rng.gauss() } }
             val x = Array(pop) { p -> FloatArray(n) { j -> (m[j] + sigma * sqrt(C[j]) * z[p][j]).coerceIn(-3f, 3f) } }
-            // evaluate the whole population at once across the pool — each f() is
-            // an independent synth + embed on thread-safe sessions
-            val futures = Array(pop) { p -> exec.submit(java.util.concurrent.Callable { f(x[p]) }) }
-            val scores = FloatArray(pop) { p ->
-                futures[p].get().also { onProgress(evals.incrementAndGet().toFloat() / total) }
-            }
+            // the whole generation is one batched synthesis + pop embeds
+            val scores = f(x)
+            done += pop; onProgress(done.toFloat() / total)
             val order = (0 until pop).sortedBy { scores[it] }
+            if (scores[order[0]] < bestF - 1e-4f) lastGain = g
             if (scores[order[0]] < bestF) { bestF = scores[order[0]]; bestX = x[order[0]].copyOf() }
             val zmean = FloatArray(n); val newM = FloatArray(n)
             for (r in 0 until mu) { val idx = order[r]; for (j in 0 until n) { zmean[j] += w[r] * z[idx][j]; newM[j] += w[r] * x[idx][j] } }
@@ -236,6 +289,10 @@ class RefineEngine(private val ctx: Context) {
                 var cmuTerm = 0f
                 for (r in 0 until mu) { val d = sqrt(C[j]) * z[order[r]][j]; cmuTerm += w[r] * d * d }
                 C[j] = ((1 - c1 - cmu) * C[j] + c1 * pc[j] * pc[j] + cmu * cmuTerm).coerceAtLeast(1e-8f)
+            }
+            if (g - lastGain >= PATIENCE) {
+                DebugLog.log(ctx, "RefineEngine", "no improvement in $PATIENCE generations; stopping early at gen ${g + 1}/$iters")
+                break
             }
         }
         return bestX
@@ -259,16 +316,42 @@ class RefineEngine(private val ctx: Context) {
         val x0 = encode(seed)
         val startCos = cosineOf(x0)
 
+        // Freeze the search probe's duration from the encoder seed: style_dp
+        // only sets the duration scalar, and a fixed latent length is what lets
+        // a whole generation run as one batch and share one noise tensor
+        // (common random numbers — a deterministic objective).
+        val st = supertonic ?: return null
+        val searchIds = st.probeIds(PROBE_SEARCH) ?: return null
+        val dur = st.probeDuration(searchIds, seed.dp) ?: return null
+        val wavLen = (dur * st.sampleRate).toInt()
+        val latentLen = ((wavLen + st.latentChunk - 1) / st.latentChunk).coerceAtLeast(1)
+        val noiseRng = Rng(1234567)
+        val noise = FloatArray(st.latentWidth * latentLen) { noiseRng.gauss() }
+
         val evalCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val objective: (FloatArray) -> Float = { c ->
-            evalCount.incrementAndGet()
-            var l2 = 0f; for (v in c) l2 += v * v
-            -(cosineOf(c) - 0.02f * l2 / c.size)      // maximise cosine, gentle pull to the manifold
+        var batched = true
+        val objective: (Array<FloatArray>) -> FloatArray = { xs ->
+            evalCount.addAndGet(xs.size)
+            val ttls = Array(xs.size) { decodeTtlFlat(xs[it]) }
+            var wavs = if (batched)
+                st.generateBatch(searchIds, ttls, ttlR, ttlC, latentLen, wavLen, noise, SEARCH_STEPS)
+            else null
+            if (wavs == null) {
+                if (batched) { batched = false
+                    DebugLog.log(ctx, "RefineEngine", "batched synthesis rejected; per-candidate fallback") }
+                wavs = Array(xs.size) { p ->
+                    st.generateBatch(searchIds, arrayOf(ttls[p]), ttlR, ttlC,
+                        latentLen, wavLen, noise, SEARCH_STEPS)?.get(0) ?: FloatArray(0)
+                }
+            }
+            FloatArray(xs.size) { p ->
+                val w16 = if (wavs[p].isEmpty()) null else floatToMono16k(wavs[p], st.sampleRate)
+                val cos = if (w16 == null) -1f else score(w16)
+                var l2 = 0f; for (v in xs[p]) l2 += v * v
+                -(cos - 0.02f * l2 / xs[p].size)      // maximise cosine, gentle pull to the manifold
+            }
         }
-        val exec = java.util.concurrent.Executors.newFixedThreadPool(parallelism)
-        val best = try {
-            sepCma(x0, 0.35f, iters, pop, objective, onProgress, alive, exec)
-        } finally { exec.shutdownNow() }
+        val best = sepCma(x0, 0.35f, iters, pop, objective, onProgress, alive)
         val endCos = cosineOf(best)
         // keep whichever actually scored better — a search can wander
         val chosen = if (endCos >= startCos) decode(best) else decode(x0)

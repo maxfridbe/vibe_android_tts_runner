@@ -37,9 +37,11 @@ class RefineService : Service() {
 
         // A wider 384-component basis reaches 0.8+ (matching the desktop
         // reference) but needs a bigger search — the desktop probe used ~3600
-        // evaluations at k=384. The refine now evaluates each generation's
-        // population across cores, so that budget stays roughly the same
-        // wall-clock as the old sequential k=128 run.
+        // evaluations at k=384. The refine synthesises each generation's
+        // population as one batched pass at reduced fidelity (short probe,
+        // 4 flow steps, frozen duration, shared noise) and stops early on
+        // plateau, so this budget costs a fraction of the old sequential
+        // full-fidelity run (~8× per evaluation measured on desktop).
         const val ITERS = 120
         const val POP = 20
 
