@@ -106,7 +106,12 @@ class RefineEngine(private val ctx: Context) {
             }
             spk = e.createSession(spkBytes, opts)
             supertonic = SupertonicEngine(ctx).also {
-                if (!it.load(ModelManager.supertonicDir(ctx), backend, intraThreads = evalThreads)) return false
+                // dynamic sessions stay on CPU (accelerators refuse their
+                // dynamic shapes anyway); the static refine graphs, if staged
+                // under supertonic-3/static, get the requested backend
+                if (!it.load(ModelManager.supertonicDir(ctx), "cpu", intraThreads = evalThreads)) return false
+                if (backend != "cpu")
+                    it.loadStatic(ModelManager.supertonicDir(ctx), backend, intraThreads = evalThreads)
             }
             true
         } catch (t: Throwable) {

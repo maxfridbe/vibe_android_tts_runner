@@ -34,6 +34,14 @@ class SupertonicEngine(private val ctx: Context) {
     private var textEnc: OrtSession? = null
     private var vecEst: OrtSession? = null
     private var vocoder: OrtSession? = null
+    // Static-shape variants of the refine hot loop (batch 20, 92 probe tokens,
+    // 128 latent frames): mobile GPU/NPU compilers refuse dynamic shapes, so
+    // these are what an accelerator backend can actually place. Loaded on
+    // demand by loadStatic(); generateBatch uses them when shapes match.
+    private var textEncS: OrtSession? = null
+    private var vecEstS: OrtSession? = null
+    private var vocoderS: OrtSession? = null
+    var staticBackend = "none"; private set
     private var indexer: IntArray = IntArray(0)
     var sampleRate = 44100; private set
     private var baseChunkSize = 0
@@ -46,7 +54,50 @@ class SupertonicEngine(private val ctx: Context) {
 
     fun close() {
         runCatching { dp?.close(); textEnc?.close(); vecEst?.close(); vocoder?.close() }
+        runCatching { textEncS?.close(); vecEstS?.close(); vocoderS?.close() }
         dp = null; textEnc = null; vecEst = null; vocoder = null
+        textEncS = null; vecEstS = null; vocoderS = null; staticBackend = "none"
+    }
+
+    /** Load the static-shape refine graphs from [dir]/static with [backend]
+     *  (e.g. "nnapi"). Optional: generateBatch falls back to the dynamic CPU
+     *  sessions when these are absent or shapes don't match. */
+    fun loadStatic(dir: File, backend: String, intraThreads: Int = 0): Boolean {
+        val sdir = File(dir, "static")
+        val files = listOf("text_encoder.static.onnx", "vector_estimator.static.onnx",
+                           "vocoder.static.onnx").map { File(sdir, it) }
+        if (files.any { !it.exists() }) return false
+        return try {
+            val e = OrtEnvironment.getEnvironment()
+            val threads = if (intraThreads > 0) intraThreads
+                else Runtime.getRuntime().availableProcessors().coerceAtMost(6)
+            fun opts() = OrtSession.SessionOptions().apply {
+                setIntraOpNumThreads(threads)
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                // CPU_DISABLED: ops the accelerator driver rejects go back to
+                // ORT's fast multithreaded CPU kernels instead of NNAPI's
+                // single-threaded reference CPU (measured 2.7x SLOWER overall
+                // without this). USE_FP16 lets the GPU run half precision.
+                if (backend == "nnapi") addNnapi(java.util.EnumSet.of(
+                    ai.onnxruntime.providers.NNAPIFlags.USE_FP16,
+                    ai.onnxruntime.providers.NNAPIFlags.CPU_DISABLED))
+                if (backend == "xnnpack") {
+                    addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                    setIntraOpNumThreads(1)
+                }
+            }
+            textEncS = e.createSession(files[0].absolutePath, opts())
+            vecEstS = e.createSession(files[1].absolutePath, opts())
+            vocoderS = e.createSession(files[2].absolutePath, opts())
+            staticBackend = backend
+            DebugLog.log(ctx, "Supertonic", "static refine graphs loaded ($backend)")
+            true
+        } catch (t: Throwable) {
+            DebugLog.log(ctx, "Supertonic", "static load failed ($backend)", t as? Exception ?: Exception(t))
+            runCatching { textEncS?.close(); vecEstS?.close(); vocoderS?.close() }
+            textEncS = null; vecEstS = null; vocoderS = null; staticBackend = "none"
+            false
+        }
     }
 
     /** @param backend "cpu" | "nnapi" — NNAPI hands layers to the phone's
@@ -146,6 +197,15 @@ class SupertonicEngine(private val ctx: Context) {
         val e = env ?: return null
         val bn = ttlsFlat.size
         if (bn == 0) return arrayOf()
+        // Accelerator path: exact static shapes, latent mask-padded to STATIC_LL.
+        if (textEncS != null && bn == STATIC_B && ids.size == STATIC_L && latentLen <= STATIC_LL) {
+            generateBatchStatic(ids, ttlsFlat, ttlRows, ttlCols, latentLen, wavLen, noise, steps)
+                ?.let { return it }
+            // a failed static run closes those sessions so we don't retry every generation
+            runCatching { textEncS?.close(); vecEstS?.close(); vocoderS?.close() }
+            textEncS = null; vecEstS = null; vocoderS = null; staticBackend = "none"
+            DebugLog.log(ctx, "Supertonic", "static path failed; dynamic CPU fallback")
+        }
         val b = bn.toLong(); val len = ids.size
         return try {
             val idsB = LongArray(len * bn) { ids[it % len] }
@@ -191,6 +251,67 @@ class SupertonicEngine(private val ctx: Context) {
             Array(bn) { p -> FloatArray(n) { i -> wav[p * row + i] } }
         } catch (t: Throwable) {
             DebugLog.log(ctx, "Supertonic", "generateBatch failed (B=$bn)", t as? Exception ?: Exception(t))
+            null
+        }
+    }
+
+    /** The static-shape twin of the dynamic batch path below: same tensors,
+     *  fixed dims (STATIC_B/L/LL), latent padded past [latentLen] with zeros in
+     *  the data and the mask. Returns null on any failure so the caller can
+     *  fall back. */
+    private fun generateBatchStatic(ids: LongArray, ttlsFlat: Array<FloatArray>, ttlRows: Int,
+                                    ttlCols: Int, latentLen: Int, wavLen: Int, noise: FloatArray,
+                                    steps: Int): Array<FloatArray>? {
+        val e = env ?: return null
+        val bn = STATIC_B; val b = bn.toLong(); val len = STATIC_L
+        return try {
+            val idsB = LongArray(len * bn) { ids[it % len] }
+            val maskB = FloatArray(len * bn) { 1f }
+            val ttlB = FloatArray(ttlRows * ttlCols * bn)
+            for (p in 0 until bn) System.arraycopy(ttlsFlat[p], 0, ttlB, p * ttlRows * ttlCols, ttlRows * ttlCols)
+            val idsT = OnnxTensor.createTensor(e, LongBuffer.wrap(idsB), longArrayOf(b, len.toLong()))
+            val maskT = OnnxTensor.createTensor(e, FloatBuffer.wrap(maskB), longArrayOf(b, 1, len.toLong()))
+            val ttlT = OnnxTensor.createTensor(e, FloatBuffer.wrap(ttlB),
+                longArrayOf(b, ttlRows.toLong(), ttlCols.toLong()))
+            val encOut = textEncS!!.run(mapOf("text_ids" to idsT, "style_ttl" to ttlT, "text_mask" to maskT))
+            val textEmb = encOut[0] as OnnxTensor
+
+            val lDim = latentWidth
+            val perActual = lDim * latentLen
+            val perPad = lDim * STATIC_LL
+            // per-row: real noise laid out [lDim, latentLen] padded to [lDim, STATIC_LL]
+            var xt = FloatArray(perPad * bn)
+            for (p in 0 until bn) for (c in 0 until lDim)
+                System.arraycopy(noise, c * latentLen, xt, p * perPad + c * STATIC_LL, latentLen)
+            val latMask = FloatArray(STATIC_LL * bn)
+            for (p in 0 until bn) for (i in 0 until latentLen) latMask[p * STATIC_LL + i] = 1f
+            val latMaskT = OnnxTensor.createTensor(e, FloatBuffer.wrap(latMask),
+                longArrayOf(b, 1, STATIC_LL.toLong()))
+            val totalT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(bn) { steps.toFloat() }),
+                longArrayOf(b))
+            for (step in 0 until steps) {
+                val xtT = OnnxTensor.createTensor(e, FloatBuffer.wrap(xt),
+                    longArrayOf(b, lDim.toLong(), STATIC_LL.toLong()))
+                val curT = OnnxTensor.createTensor(e, FloatBuffer.wrap(FloatArray(bn) { step.toFloat() }),
+                    longArrayOf(b))
+                val out = vecEstS!!.run(mapOf(
+                    "noisy_latent" to xtT, "text_emb" to textEmb, "style_ttl" to ttlT,
+                    "text_mask" to maskT, "latent_mask" to latMaskT,
+                    "current_step" to curT, "total_step" to totalT))
+                xt = flatten(out[0].value)
+                out.close(); xtT.close(); curT.close()
+            }
+            val latT = OnnxTensor.createTensor(e, FloatBuffer.wrap(xt),
+                longArrayOf(b, lDim.toLong(), STATIC_LL.toLong()))
+            val wavOut = vocoderS!!.run(mapOf("latent" to latT))
+            val wav = flatten(wavOut[0].value)
+            wavOut.close(); latT.close(); encOut.close()
+            idsT.close(); maskT.close(); ttlT.close(); latMaskT.close(); totalT.close()
+            val row = wav.size / bn
+            val n = kotlin.math.min(row, max(1, wavLen))
+            Array(bn) { p -> FloatArray(n) { i -> wav[p * row + i] } }
+        } catch (t: Throwable) {
+            DebugLog.log(ctx, "Supertonic", "generateBatchStatic failed", t as? Exception ?: Exception(t))
             null
         }
     }
@@ -335,6 +456,12 @@ class SupertonicEngine(private val ctx: Context) {
     }
 
     companion object {
+        // Static refine-graph dims: batch = population, tokens of the rich
+        // search probe, latent frames (~8.9 s headroom, mask-padded).
+        const val STATIC_B = 20
+        const val STATIC_L = 92
+        const val STATIC_LL = 128
+
         /** Style JSON as produced by the project's voice styles / Voice Builder. */
         fun loadStyle(f: File): Style? = try {
             val o = JSONObject(f.readText())

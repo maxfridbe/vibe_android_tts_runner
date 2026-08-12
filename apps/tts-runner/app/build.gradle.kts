@@ -94,6 +94,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0") // M3 tabs/nav/cards
     // Supertonic 3 runs as ONNX graphs; this ships the ORT native libs plus the
-    // NNAPI execution provider used for the GPU/NPU attempt
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    // NNAPI execution provider used for the GPU/NPU attempt (1.20 -> 1.29 for
+    // the static-shape NNAPI Split builder fix)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
 }
