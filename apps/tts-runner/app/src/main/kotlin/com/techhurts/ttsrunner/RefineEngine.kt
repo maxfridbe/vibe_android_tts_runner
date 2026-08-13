@@ -20,8 +20,11 @@ import kotlin.math.sqrt
  *  close the gap but needs autograd and gigabytes; a phone has neither. So
  *  this searches the same PCA basis with a gradient-free optimiser
  *  (separable CMA-ES): decode a candidate's coefficients to a style,
- *  synthesise a short line with Supertonic, embed it with ECAPA, score its
- *  cosine to the reference recording — forward passes the app already runs.
+ *  synthesise a short line with Supertonic, embed it, score its cosine to
+ *  the reference recording — forward passes the app already runs. The judge
+ *  is the qwen speaker encoder with centered cosine when its files are
+ *  staged (the ear-aligned metric; desktop measured mean 0.840 over 18
+ *  voices), ECAPA otherwise.
  *  The search runs at reduced fidelity (short probe, 4 flow steps, each
  *  generation synthesised as one batched pass with a frozen duration and
  *  shared noise) and stops early when it plateaus; only the seed and the
@@ -55,11 +58,17 @@ class RefineEngine(private val ctx: Context) {
         // Stop when the best cosine hasn't improved for this many generations.
         // (15 measurably cut hard voices short in the sweep; 25 kept quality.)
         private const val PATIENCE = 25
-        private const val RATE = 16000
+        private const val RATE = 16000       // ECAPA front-end
+        private const val QRATE = 24000      // qwen front-end
+        // Population mean of qwen speaker features: raw qwen features share a
+        // dominant common component (different speakers cosine at ~0.94), so
+        // similarity is measured after subtracting this center — the metric
+        // the whole qwen-first program optimises (d' 4.3 on ref pairs).
+        const val QCENTER_ASSET = "qwen_center.bin"
 
         fun available(ctx: Context): Boolean =
             File(VoiceCloner.dir(ctx), BASIS_ASSET).length() > 0 &&
-                VoiceCloner.variants(ctx).contains(VoiceCloner.VARIANT_ECAPA)
+                VoiceCloner.variants(ctx).isNotEmpty()
     }
 
     // ---- basis (style_basis.bin) ------------------------------------------
@@ -71,6 +80,9 @@ class RefineEngine(private val ctx: Context) {
 
     private var env: OrtEnvironment? = null
     private var spk: OrtSession? = null
+    private var qcenter: FloatArray? = null   // non-null => qwen-centered scoring
+    private var scoreRate = RATE
+    var analyzer = "ecapa"; private set
     private var supertonic: SupertonicEngine? = null
 
     // The whole population is synthesised as ONE batched ORT run per
@@ -101,10 +113,24 @@ class RefineEngine(private val ctx: Context) {
             val opts = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(evalThreads)   // small: parallelism is across candidates
             }
-            val spkBytes = File(VoiceCloner.dir(ctx), VoiceCloner.SPK_ASSET).let {
-                if (it.exists()) it.readBytes() else ctx.assets.open(VoiceCloner.SPK_ASSET).use { s -> s.readBytes() }
+            // Scorer: the qwen speaker encoder + center vector when staged
+            // (the ear-aligned referee); ECAPA otherwise.
+            val qspkF = File(VoiceCloner.dir(ctx), VoiceCloner.QSPK_ASSET)
+            val qcenF = File(VoiceCloner.dir(ctx), QCENTER_ASSET)
+            if (qspkF.exists() && qcenF.length() >= 2048L * 4) {
+                spk = e.createSession(qspkF.readBytes(), opts)
+                val bb = ByteBuffer.wrap(qcenF.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+                qcenter = FloatArray(2048) { bb.float }
+                scoreRate = QRATE
+                analyzer = "qwen-centered"
+            } else {
+                val spkBytes = File(VoiceCloner.dir(ctx), VoiceCloner.SPK_ASSET).let {
+                    if (it.exists()) it.readBytes() else ctx.assets.open(VoiceCloner.SPK_ASSET).use { s -> s.readBytes() }
+                }
+                spk = e.createSession(spkBytes, opts)
+                qcenter = null; scoreRate = RATE; analyzer = "ecapa"
             }
-            spk = e.createSession(spkBytes, opts)
+            DebugLog.log(ctx, "RefineEngine", "scoring analyzer: $analyzer")
             supertonic = SupertonicEngine(ctx).also {
                 // dynamic sessions stay on CPU (accelerators refuse their
                 // dynamic shapes anyway); the static refine graphs, if staged
@@ -197,22 +223,35 @@ class RefineEngine(private val ctx: Context) {
         val style = decode(c)
         val pcmBytes = supertonic?.generate(PROBE, style, steps = FINAL_STEPS) ?: return -1f
         val srcRate = supertonic?.sampleRate ?: 44100
-        val pcm = pcm16ToMono16k(pcmBytes, srcRate) ?: return -1f
+        val pcm = pcm16ToMono(pcmBytes, srcRate, scoreRate) ?: return -1f
         return score(pcm)
     }
 
-    private fun score(pcm16k: FloatArray): Float {
-        val emb = embedPcm(pcm16k) ?: return -1f
-        var dot = 0f
-        for (i in emb.indices) dot += emb[i] * target[i]
-        return dot                              // both unit-norm out of spk_encoder
+    /** Embed at the active analyzer's rate; qwen features are centered (the
+     *  raw space shares a dominant common component) and re-normalised so
+     *  cosine spans the full range. ECAPA comes out unit-norm already. */
+    private fun embedScore(pcm: FloatArray): FloatArray? {
+        val emb = embedPcm(pcm) ?: return null
+        val c = qcenter ?: return emb
+        var n = 0f
+        for (i in emb.indices) { emb[i] -= c[i]; n += emb[i] * emb[i] }
+        n = sqrt(n) + 1e-8f
+        for (i in emb.indices) emb[i] /= n
+        return emb
     }
 
-    /** Float wav at [srcRate] -> 16 kHz (linear), for the batched search path. */
-    private fun floatToMono16k(wav: FloatArray, srcRate: Int): FloatArray? {
+    private fun score(pcm: FloatArray): Float {
+        val emb = embedScore(pcm) ?: return -1f
+        var dot = 0f
+        for (i in emb.indices) dot += emb[i] * target[i]
+        return dot
+    }
+
+    /** Float wav at [srcRate] -> [dstRate] (linear), for the batched search path. */
+    private fun floatToMono(wav: FloatArray, srcRate: Int, dstRate: Int): FloatArray? {
         if (wav.size < 2) return null
-        if (srcRate == RATE) return wav
-        val outN = (wav.size.toLong() * RATE / srcRate).toInt()
+        if (srcRate == dstRate) return wav
+        val outN = (wav.size.toLong() * dstRate / srcRate).toInt()
         if (outN <= 1) return null
         return FloatArray(outN) { i ->
             val xf = i.toDouble() * (wav.size - 1) / (outN - 1)
@@ -221,20 +260,13 @@ class RefineEngine(private val ctx: Context) {
         }
     }
 
-    /** Raw 16-bit LE mono PCM at [srcRate] -> float at 16 kHz. */
-    private fun pcm16ToMono16k(b: ByteArray, srcRate: Int): FloatArray? {
+    /** Raw 16-bit LE mono PCM at [srcRate] -> float at [dstRate]. */
+    private fun pcm16ToMono(b: ByteArray, srcRate: Int, dstRate: Int): FloatArray? {
         val frames = b.size / 2
         if (frames < 2) return null
         val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
         val mono = FloatArray(frames) { bb.getShort(it * 2) / 32768f }
-        if (srcRate == RATE) return mono
-        val outN = (frames.toLong() * RATE / srcRate).toInt()
-        if (outN <= 1) return null
-        return FloatArray(outN) { i ->
-            val xf = i.toDouble() * (frames - 1) / (outN - 1)
-            val i0 = xf.toInt().coerceAtMost(frames - 1); val i1 = (i0 + 1).coerceAtMost(frames - 1)
-            val tt = (xf - i0).toFloat(); mono[i0] * (1 - tt) + mono[i1] * tt
-        }
+        return floatToMono(mono, srcRate, dstRate)
     }
 
     // ---- separable CMA-ES (port of tooling/cma_polish.sep_cma) -------------
@@ -318,8 +350,8 @@ class RefineEngine(private val ctx: Context) {
                onProgress: (Float) -> Unit = {}, alive: () -> Boolean = { true }): Result? {
         if (!load(backend)) return null
         target = run {
-            val pcm = wavToMono16k(refWav.readBytes()) ?: return null
-            embedPcm(pcm) ?: return null
+            val pcm = wavToMono(refWav.readBytes(), scoreRate) ?: return null
+            embedScore(pcm) ?: return null
         }
         val seed = SupertonicEngine.loadStyle(seedStyleFile) ?: return null
         val x0 = encode(seed)
@@ -354,8 +386,8 @@ class RefineEngine(private val ctx: Context) {
                 }
             }
             FloatArray(xs.size) { p ->
-                val w16 = if (wavs[p].isEmpty()) null else floatToMono16k(wavs[p], st.sampleRate)
-                val cos = if (w16 == null) -1f else score(w16)
+                val w = if (wavs[p].isEmpty()) null else floatToMono(wavs[p], st.sampleRate, scoreRate)
+                val cos = if (w == null) -1f else score(w)
                 var l2 = 0f; for (v in xs[p]) l2 += v * v
                 -(cos - 0.02f * l2 / xs[p].size)      // maximise cosine, gentle pull to the manifold
             }
@@ -364,7 +396,7 @@ class RefineEngine(private val ctx: Context) {
         val endCos = cosineOf(best)
         // keep whichever actually scored better — a search can wander
         val chosen = if (endCos >= startCos) decode(best) else decode(x0)
-        return Result(styleJson(chosen, refWav.name, maxOf(startCos, endCos)),
+        return Result(styleJson(chosen, refWav.name, startCos, endCos, evalCount.get(), iters, pop),
             startCos, endCos, evalCount.get())
     }
 
@@ -376,26 +408,44 @@ class RefineEngine(private val ctx: Context) {
         return emb
     }
 
-    private fun styleJson(s: SupertonicEngine.Style, ref: String, cos: Float): JSONObject {
+    /** Style JSON whose metadata fully explains the clone: which analyzer
+     *  judged it, the objective, before/after scores, search budget, basis,
+     *  reference, app version and when. */
+    private fun styleJson(s: SupertonicEngine.Style, ref: String, startCos: Float,
+                          endCos: Float, evals: Int, iters: Int, pop: Int): JSONObject {
         fun arr(m: Array<Array<FloatArray>>, r: Int, c: Int): Pair<JSONArray, JSONArray> {
             val data = JSONArray(); for (row in m[0]) for (v in row) data.put(v.toDouble())
             return JSONArray(listOf(1, r, c)) to data
         }
         val (td, tdata) = arr(s.ttl, ttlR, ttlC)
         val (dd, ddata) = arr(s.dp, dpR, dpC)
+        val ver = runCatching {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+        }.getOrNull() ?: "?"
         return JSONObject()
             .put("style_ttl", JSONObject().put("dims", td).put("data", tdata))
             .put("style_dp", JSONObject().put("dims", dd).put("data", ddata))
             .put("metadata", JSONObject()
-                .put("source", "on-device refine (CMA polish)")
+                .put("source", "on-device refine (sep-CMA over the k=$k style basis)")
+                .put("analyzer", analyzer)
+                .put("objective", if (qcenter != null)
+                    "centered qwen cosine (population-mean centered, unit-norm)"
+                    else "ecapa cosine")
                 .put("reference", ref)
-                .put("held_out_cos", cos.toDouble()))
+                .put("start_cos", startCos.toDouble())
+                .put("end_cos", endCos.toDouble())
+                .put("held_out_cos", maxOf(startCos, endCos).toDouble())
+                .put("evals", evals)
+                .put("budget", "${iters}x${pop}, patience $PATIENCE, search probe: rich")
+                .put("app_version", ver)
+                .put("created", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm",
+                    java.util.Locale.US).format(java.util.Date())))
     }
 
     // ---- small audio helpers ----------------------------------------------
 
-    /** 16-bit PCM WAV bytes -> mono float at 16 kHz (linear resample). */
-    private fun wavToMono16k(b: ByteArray): FloatArray? {
+    /** 16-bit PCM WAV bytes -> mono float at [dstRate] (linear resample). */
+    private fun wavToMono(b: ByteArray, dstRate: Int): FloatArray? {
         if (b.size < 44 || String(b, 0, 4) != "RIFF") return null
         val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
         var pos = 12; var rate = 0; var channels = 1; var bits = 16
@@ -417,14 +467,7 @@ class RefineEngine(private val ctx: Context) {
             for (c in 0 until channels) acc += bb.getShort(off + (i * channels + c) * 2) / 32768f
             mono[i] = acc / channels
         }
-        if (rate == RATE) return mono
-        val outN = (frames.toLong() * RATE / rate).toInt()
-        if (outN <= 1) return null
-        return FloatArray(outN) { i ->
-            val xf = i.toDouble() * (frames - 1) / (outN - 1)
-            val i0 = xf.toInt().coerceAtMost(frames - 1); val i1 = (i0 + 1).coerceAtMost(frames - 1)
-            val tt = (xf - i0).toFloat(); mono[i0] * (1 - tt) + mono[i1] * tt
-        }
+        return floatToMono(mono, rate, dstRate)
     }
 
     @Suppress("UNCHECKED_CAST")

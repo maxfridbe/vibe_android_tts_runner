@@ -91,7 +91,8 @@ class RefineService : Service() {
             val result = runCatching {
                 engine.refine(ref, seed,
                     backend = intent?.getStringExtra("backend") ?: "cpu",
-                    iters = ITERS, pop = POP,
+                    iters = intent?.getIntExtra("iters", ITERS) ?: ITERS,
+                    pop = intent?.getIntExtra("pop", POP) ?: POP,
                     onProgress = { f ->
                         val pm = (f * 1000).toInt().coerceIn(0, 1000)
                         if (pm - lastPermille >= 10) {   // throttle notification churn
