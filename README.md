@@ -96,7 +96,8 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
    highlights the cleaned-up text line being read, with pause, save and share.
    Selected text works too, via the text-selection menu.
 3. Or compose at the top of the **Jobs** tab: paste text, pick a speaker,
-   Listen or Save.
+   Listen or Save. A **speech speed** slider (0.6×–1.6×, Supertonic voices)
+   lives here too and applies to every job and live session until changed.
 4. **Chats** for conversation: a dropdown picks who speaks next, ten expression
    tags sit above the keyboard (see `docs/expression-tags.md` — they were found
    by probing the model, not documented upstream), and long-pressing a line

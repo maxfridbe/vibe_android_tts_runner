@@ -422,6 +422,28 @@ class MainActivity : AppCompatActivity() {
             modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == 2 }
             addView(modeGroup)
 
+            // Speech speed. Supertonic's duration predictor divides by a pace
+            // factor whose published default is 1.05; the slider multiplies
+            // that, so 1.0× here is the voice's natural pace. Persisted:
+            // it applies to every job and live session until changed.
+            val speedLabel = TextView(context)
+            fun showSpeed(pct: Int) { speedLabel.text = "Speech speed ${"%.2f".format(pct / 100f)}×" }
+            addView(speedLabel)
+            addView(android.widget.SeekBar(context).apply {
+                max = 20                      // 0.60× .. 1.60× in 0.05 steps
+                progress = (prefs().getInt("speech_speed_pct", 100) - 60) / 5
+                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: android.widget.SeekBar?, v: Int, fromUser: Boolean) {
+                        val pct = 60 + v * 5
+                        prefs().edit().putInt("speech_speed_pct", pct).apply()
+                        showSpeed(pct)
+                    }
+                    override fun onStartTrackingTouch(s: android.widget.SeekBar?) {}
+                    override fun onStopTrackingTouch(s: android.widget.SeekBar?) {}
+                })
+            })
+            showSpeed(prefs().getInt("speech_speed_pct", 100))
+
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             // live mode lives on the Speakers tab now: you start it as a
             // particular speaker, which is a choice about the voice, not the job

@@ -860,7 +860,10 @@ class TtsService : Service() {
     private fun generateSupertonic(chunk: String, seed: Int): ByteArray? {
         val eng = supertonic ?: return null
         val style = supertonicStyle ?: return null
-        return eng.generate(chunk, style, steps = 8, speed = 1.05f, seed = seed)
+        // User speed multiplies the engine's published default pace (1.05);
+        // 100 = the voice's natural pace. Set from the slider on the Jobs tab.
+        val pct = getSharedPreferences("ttsrunner", MODE_PRIVATE).getInt("speech_speed_pct", 100)
+        return eng.generate(chunk, style, steps = 8, speed = 1.05f * pct / 100f, seed = seed)
     }
 
     private var loadedKey: String? = null
