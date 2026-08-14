@@ -7,10 +7,9 @@ import java.net.URL
 
 /** Download for the on-device cloning models.
  *
- *  ~150 MB of ONNX for a feature still short of the desktop cloner (0.42-0.49
- *  held-out speaker similarity against 0.82), so it does not belong in
- *  everyone's APK. It lives in the repository instead and lands in
- *  filesDir/cloner on request — the same folder a side-loaded copy uses.
+ *  ~185 MB of ONNX, so it does not belong in everyone's APK. It lives in the
+ *  repository instead and lands in filesDir/cloner on request — the same
+ *  folder a side-loaded copy uses.
  *
  *  Two analyzer variants ship together: Qwen3-TTS's own speaker encoder (the
  *  one listening preferred) and the classic ECAPA pair. */
@@ -22,10 +21,11 @@ object ClonerModel {
 
     private val FILES = listOf(
         VoiceCloner.QSPK_ASSET to 48_703_976L,
-        VoiceCloner.QSTYLE_ASSET to 9_648_866L,   // retrained on 187 pairs, 0.375 -> 0.429
+        VoiceCloner.QSTYLE_ASSET to 24_407_532L,  // fh_d10: PCA-256 front + 512x2, 418-pair expressive bank, centered-qwen 0.524 held-out
+        RefineEngine.QCENTER_ASSET to 8_192L,     // qwen population center (2048 x f32): flips the refine to centered-qwen scoring
         VoiceCloner.SPK_ASSET to 84_084_349L,
         VoiceCloner.STYLE_ASSET to 8_404_363L,
-        RefineEngine.BASIS_ASSET to 19_910_684L,  // k=384 PCA basis (96.1% var) for the on-device refine
+        RefineEngine.BASIS_ASSET to 19_910_684L,  // k=384 basis v3 (expressive refit) — new NAME because a refit keeps the same size, and size is the only cache-buster
     )
 
     val totalBytes: Long get() = FILES.sumOf { it.second }
@@ -33,7 +33,10 @@ object ClonerModel {
     /** Exact sizes, so a retrained model of the same name re-downloads. */
     fun installed(ctx: Context) = FILES.all { (n, s) -> File(VoiceCloner.dir(ctx), n).length() == s }
 
-    fun remove(ctx: Context) = FILES.forEach { (n, _) -> File(VoiceCloner.dir(ctx), n).delete() }
+    fun remove(ctx: Context) {
+        FILES.forEach { (n, _) -> File(VoiceCloner.dir(ctx), n).delete() }
+        File(VoiceCloner.dir(ctx), RefineEngine.LEGACY_BASIS_ASSET).delete()
+    }
 
     @Volatile private var cancel = false
 

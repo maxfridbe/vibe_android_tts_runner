@@ -32,12 +32,22 @@ import kotlin.math.sqrt
  *  `clonevoice --refine`, where these levers measured ~8× per evaluation
  *  (see supertonic_voice_cloner/method.md, "Making it faster").
  *
- *  Needs the models the cloner downloads (spk_encoder.onnx + style_basis.bin);
- *  runs on the caller's thread and reports progress by fraction. */
+ *  Needs the models the cloner downloads (a speaker encoder + the style
+ *  basis); runs on the caller's thread and reports progress by fraction. */
 class RefineEngine(private val ctx: Context) {
 
     companion object {
-        const val BASIS_ASSET = "style_basis.bin"
+        const val BASIS_ASSET = "style_basis_v3.bin"
+        // Pre-expressive-bank name, still honored for side-loaded copies. The
+        // rename is deliberate: a k=384 refit is byte-for-byte the same SIZE
+        // as its predecessor (the format fixes it) and the downloader's only
+        // cache-buster is size, so a same-name refit would never reach
+        // existing installs.
+        const val LEGACY_BASIS_ASSET = "style_basis.bin"
+
+        fun basisFile(ctx: Context): File =
+            File(VoiceCloner.dir(ctx), BASIS_ASSET).takeIf { it.length() > 0 }
+                ?: File(VoiceCloner.dir(ctx), LEGACY_BASIS_ASSET)
         // Full-fidelity probe (disjoint from what any head trained or was
         // scored on) — used only for the seed and final-winner scores, so the
         // reported start/end cosines stay comparable to older runs.
@@ -67,8 +77,7 @@ class RefineEngine(private val ctx: Context) {
         const val QCENTER_ASSET = "qwen_center.bin"
 
         fun available(ctx: Context): Boolean =
-            File(VoiceCloner.dir(ctx), BASIS_ASSET).length() > 0 &&
-                VoiceCloner.variants(ctx).isNotEmpty()
+            basisFile(ctx).length() > 0 && VoiceCloner.variants(ctx).isNotEmpty()
     }
 
     // ---- basis (style_basis.bin) ------------------------------------------
@@ -94,7 +103,7 @@ class RefineEngine(private val ctx: Context) {
     private val evalThreads = cores.coerceIn(2, 6)
 
     private fun loadBasis(): Boolean {
-        val f = File(VoiceCloner.dir(ctx), BASIS_ASSET)
+        val f = basisFile(ctx)
         if (f.length() < 28) return false
         val b = ByteBuffer.wrap(f.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
         k = b.int; dTot = b.int; split = b.int

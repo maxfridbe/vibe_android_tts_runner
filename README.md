@@ -124,23 +124,27 @@ graphs, the Python that produces them, and a standalone Rust `clonevoice` CLI
 a set of small ONNX graphs trained for this repo (`models/cloner`, and
 `docs/on-device-cloning.md` for how). They predict a style from a recording in
 about a second, with a **choice of two analyzers**: Qwen3-TTS's own speaker
-encoder (preferred in listening — it carries character voices better) or
-ECAPA. The heads are supervised regressors trained through the frozen
-synthesiser on inverted-real-speaker labels; they score **0.43–0.49** held-out
-speaker similarity against **0.82** for the desktop route below — a
-recognisable take on the voice rather than the person.
+encoder (the shipped direction — the project now measures itself in
+**centered Qwen cosine**, which the ear has consistently agreed with) or
+ECAPA. The Qwen head is a supervised regressor trained through the frozen
+synthesiser on a 418-pair expressive bank of inverted real speakers (read
+speech + emotion + whisper); it scores **0.524** held-out centered-qwen —
+above the **0.4905** the desktop gradient inversions score on themselves.
+Delivery classes still missing from the training bank clone poorly until
+their inverted examples are added (whisper was fixed this way; high-energy
+voices are the current wave).
 
 Then a cloned style can be **refined on the phone** (a background job — leave the
 app, lock the screen): a forward-only search (separable CMA-ES,
 `tooling/cma_polish.py` ported to Kotlin in `RefineEngine`) decodes candidate
 coefficients through the PCA basis, synthesises a short line, embeds it, and
-hill-climbs the cosine to the reference — no autograd, just the forward passes
-the app already runs. Over the shipped **k=384 basis** (96.1 % of style
-variance) this reaches the desktop reference: measured **0.80–0.83** held-out on
-several voices (e.g. a soothing British voice 0.83, a fireside narrator 0.80),
-up from ~0.77 on the older k=128 basis. It's ~an hour of on-device compute for
-that quality, which is why it runs in the background. Gradient inversion can't
-run on a phone; this reaches the same answer without it.
+hill-climbs the similarity to the reference — no autograd, just the forward
+passes the app already runs. With `qwen_center.bin` staged the refine judges
+by centered-qwen cosine (measured mean **0.840** over 18 voices on desktop);
+each generation is synthesised as one batched pass at reduced fidelity, so
+the search runs ~5× faster end-to-end than the first port. Gradient
+inversion can't run on a phone; this reaches — and by ear sometimes beats —
+the same answer without it.
 
 **On a CUDA box (the quality reference).** It can be done offline
 with [Mimocro/supertonic-voice-cloning](https://github.com/Mimocro/supertonic-voice-cloning),
@@ -196,10 +200,12 @@ each from its own public host — no account or API token:
 | `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf` / `-Q8_0.gguf` + `mmproj-…-Q8_0.gguf` | Qwen talker + codec projector — [huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
 | `Qwen3-TTS-12Hz-1.7B-Base-Q4_0.gguf` | **not downloaded** — requantized on-device from the Q8 file (nobody hosts this quant; needed for the Adreno OpenCL kernels) |
 | `Qwen3-TTS-VD-Q4_K_M.gguf` + `mmproj-Qwen3-TTS-VD-Q8_0.gguf` | VoiceDesign talker + projector — this repo's [`models-v1` release](https://github.com/maxfridbe/vibe_android_tts_runner/releases/tag/models-v1) (upstream ships no VoiceDesign GGUF) |
-| `spk_encoder.onnx`, `style_encoder.onnx`, `qwen_spk_encoder.onnx`, `style_encoder_qwen.onnx`, `style_basis.bin` | on-device cloning graphs — this repo's [`models/cloner`](models/cloner) via `raw.githubusercontent.com` |
+| `spk_encoder.onnx`, `style_encoder.onnx`, `qwen_spk_encoder.onnx`, `style_encoder_qwen.onnx`, `qwen_center.bin`, `style_basis_v3.bin` | on-device cloning graphs — this repo's [`models/cloner`](models/cloner) via `raw.githubusercontent.com` |
 
 The cloning graphs are fetched as raw files from the repo (no release plumbing),
-and re-download automatically if a retrained model of the same name changes size.
+and re-download automatically if a retrained model of the same name changes
+size (the style basis is served under a versioned name for exactly this
+reason: a k=384 refit never changes size).
 
 To rebuild the VoiceDesign GGUFs yourself, run llama.cpp's converter — this
 repo's patch is required, it teaches the converter and mtmd about a codec-only

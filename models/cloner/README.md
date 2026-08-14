@@ -6,75 +6,43 @@ variants — pick one when cloning; the app offers both:
 
 | file | size | shape |
 |---|---|---|
-| `spk_encoder.onnx` | 84 MB | 16 kHz mono waveform → 192-d ECAPA embedding |
-| `style_encoder.onnx` | 8.4 MB | 192-d ECAPA embedding → `style_ttl [1,50,256]`, `style_dp [1,8,16]` |
 | `qwen_spk_encoder.onnx` | 49 MB | 24 kHz mono waveform → 2048-d Qwen3-TTS speaker embedding |
-| `style_encoder_qwen.onnx` | 9.6 MB | 2048-d Qwen embedding → the same style tensors |
+| `style_encoder_qwen.onnx` | 24 MB | 2048-d Qwen embedding → `style_ttl [1,50,256]`, `style_dp [1,8,16]` |
+| `qwen_center.bin` | 8 KB | 2048 × f32 population mean of Qwen speaker features |
+| `spk_encoder.onnx` | 84 MB | 16 kHz mono waveform → 192-d ECAPA embedding |
+| `style_encoder.onnx` | 8.4 MB | 192-d ECAPA embedding → the same style tensors |
+| `style_basis_v3.bin` | 20 MB | k=384 PCA style basis for the on-device refine search |
 
-Each pair turns a recording into a Supertonic speaker in two forward passes,
-about a second on a phone, where the desktop cloner needs a CUDA GPU and 500
-gradient-inversion steps. The ECAPA variant scores higher on speaker cosine;
-the Qwen variant was preferred in listening (it carries character voices
-better) and is the default in the clone dialog.
+Each analyzer pair turns a recording into a Supertonic speaker in two forward
+passes, about a second on a phone, where the desktop route needs a CUDA GPU
+and 500 gradient steps. **Qwen is the shipped direction**: the project's
+similarity metric is centered Qwen cosine (cosine of Qwen speaker features
+after subtracting `qwen_center.bin`; raw features share a dominant common
+component), and the ear has sided with the Qwen judge consistently — even
+against gradient inversion. The ECAPA pair remains for comparison.
 
-The `style_encoder*` heads are supervised regressors trained through the
-frozen synthesiser on inverted-real-speaker labels (see
-`docs/on-device-cloning.md`). Retrained on 187 inverted pairs: ECAPA head
-0.496, Qwen head 0.429 true-unseen ECAPA cosine (against 0.82 for desktop
-inversion). The forward-only CMA polish (`tooling/cma_polish.py`) lifts these
-to ~0.57 on the phone by searching the same basis — the path to closing the
-rest of the gap.
+## Current checkpoints (2026-08-13)
 
-## What this checkpoint is
+- **`style_encoder_qwen.onnx`** — "fh_d10": PCA-256 input front + 512×2 MLP,
+  trained on a **418-pair expressive bank** of inverted real speakers
+  (LibriSpeech/VCTK read speech + RAVDESS/Thorsten emotion + EARS whisper)
+  plus 3 000 manufactured (audio, coefficient) pairs. Held-out centered-qwen
+  **0.524** over 58 voices — above the 0.4905 the desktop inversions score
+  on themselves.
+- **`style_basis_v3.bin`** — the k=384 basis refit on the same expressive
+  bank. Served under a *versioned name* because a k=384 refit is always the
+  same byte size and the downloader's cache-buster is size; the app falls
+  back to a side-loaded `style_basis.bin` if the v3 name is absent.
+- **`qwen_center.bin`** — when present next to `qwen_spk_encoder.onnx`, the
+  in-app refine switches its objective to centered-qwen cosine (measured
+  mean 0.840 over 18 voices on desktop, vs the 0.4905 goal line).
 
-Trained by `tooling/train_encoder.py` (amortised inversion: the encoder is
-trained *through* the frozen synthesiser against an ECAPA speaker loss, so the
-thing it optimises is the thing that is measured).
+Depth/width sweeps kept losing to this small head (4 independent runs) —
+data coverage, not capacity, is what improves it, and delivery classes absent
+from the bank (whisper before, high-energy "bubbly" currently) clone poorly
+until inverted examples of the class are added and everything is retrained.
 
-| | |
-|---|---|
-| training pairs | 1200 style/embedding pairs from `gen_style_pairs.py` |
-| targets | 1122 unique speakers rolled with Qwen3-TTS VoiceDesign, mean pairwise cosine 0.223 |
-| basis | PCA, k = 64 |
-| steps | 20 000 (best checkpoint at 15 250) |
-| duration anchor | `--w-dur 0.3` |
-| hardware | one RTX 5070, ~340 ms/step, ~1 h 55 m |
-| best held-out | 0.3421 |
-
-A second run at k = 128 (lr 2e-4, `--w-dur 0.15`) reached 0.3176 on the same
-data, so capacity was not the limit.
-
-## How good it actually is
-
-Measured the way that matters — synthesise held-out sentences with the
-predicted style, embed them, compare to the original recording:
-
-| | held-out ECAPA cosine |
-|---|---|
-| desktop inversion, 500 iters | **0.820** |
-| this encoder, real recording | **0.223** |
-| this encoder, Qwen-designed speakers | 0.319 / 0.238 / 0.539 |
-| random preset (floor) | 0.10–0.20 |
-
-So: a voice in roughly the right family, not the person. The gap turned out to
-be the PCA basis, not the target set: projecting a 0.82-cosine desktop
-inversion onto this checkpoint's basis destroys it down to 0.225 — the same
-number the encoder scores. Later encoders trained with inverted real-speaker
-styles folded into the basis roughly double the unseen-speaker score;
-`docs/on-device-cloning.md` ("What the second night found") has the
-measurements and the path to a shippable replacement for this checkpoint.
-
-## Reproducing
-
-```
-tooling/gen_style_pairs.py  --count 1200 --out clone_out/pairs_p1.npz
-tooling/gen_speaker_bank.py --count 1500 --audio-dir clone_out/bank_audio
-tooling/gen_speaker_bank.py --embed-only --audio-dir clone_out/bank_audio --out clone_out/bank_a.npz
-tooling/merge_banks.py clone_out/bank_all.npz clone_out/bank_a.npz clone_out/bank_b.npz
-tooling/train_sweep.sh --pairs clone_out/pairs_p1.npz --targets clone_out/bank_all.npz --steps 20000
-tooling/export_cloner.py --encoder clone_out/encoder-k64.pt.best --out models/cloner
-```
-
-The roll and the embed pass use different virtualenvs (Qwen needs torch with
-CUDA; the embed pass needs the Supertonic one), which is why the bank is built
-in two commands.
+Methodology, training scripts, experiment log (`attempts.md`) and the Rust
+`clonevoice` CLI live in
+[vibe_supertonic_voice_cloner](https://github.com/maxfridbe/vibe_supertonic_voice_cloner);
+`docs/on-device-cloning.md` here covers the app integration.
