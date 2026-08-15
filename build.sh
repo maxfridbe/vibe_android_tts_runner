@@ -22,12 +22,15 @@ IMAGE="${IMAGE:-androidbase-builder}"
 GRADLE_CACHE_VOLUME="${GRADLE_CACHE_VOLUME:-androidbase-gradle-cache}"
 BUILD_TASK="${BUILD_TASK:-assembleDebug}"
 
-# Automated versioning, derived from git on the host (the container never
-# sees .git). versionCode is the commit count (monotonically increasing);
-# versionName comes from `git describe` against v* tags, e.g. tag v1.2.0
-# gives "1.2.0", three commits later gives "1.2.0-3-g<sha>".
-VERSION_CODE="${VERSION_CODE:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
-VERSION_NAME="${VERSION_NAME:-$(git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo 0.0.0-dev)}"
+# Automated versioning from the build clock (UTC): yy.mmdd.hhmm — reads as a
+# date, sorts as a number, and only ever goes up, so a reinstall from any
+# machine can never hit INSTALL_FAILED_VERSION_DOWNGRADE (the old commit-count
+# scheme did whenever checkouts disagreed on history). versionCode packs the
+# same stamp into an int31: (yy-20)*1e8 + mmddhhmm — good until 2041 (the
+# 2.1e9 Android cap).
+STAMP_UTC="$(date -u +%y%m%d%H%M)"
+VERSION_CODE="${VERSION_CODE:-$(( (10#${STAMP_UTC:0:2} - 20) * 100000000 + 10#${STAMP_UTC:2} ))}"
+VERSION_NAME="${VERSION_NAME:-$(date -u +%y.%m%d.%H%M)}"
 VERSION_NAME="${VERSION_NAME#v}"
 echo "==> Version: name=$VERSION_NAME code=$VERSION_CODE"
 

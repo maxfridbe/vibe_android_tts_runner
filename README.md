@@ -76,9 +76,11 @@ and reuses it, so reinstalls always match. CI does the same; to sign with your
 own key set the `ANDROID_KEYSTORE_B64` and `ANDROID_KEYSTORE_PROPERTIES` repo
 secrets.
 
-Versioning is derived from git: `versionCode` = commit count, `versionName` =
-`git describe --tags --match 'v*'`, so tag `v1.2.0` builds as `1.2.0` and later
-commits as `1.2.0-3-gabc1234`. Override with `VERSION_NAME` / `VERSION_CODE`.
+Versioning is the UTC build clock: `versionName` = `yy.mmdd.hhmm` (e.g.
+`26.0815.1402`), `versionCode` = the same stamp packed into an int
+(`(yy-20)·1e8 + mmddhhmm`), so every build outranks every earlier one and a
+reinstall can never hit a version downgrade. Override with `VERSION_NAME` /
+`VERSION_CODE`. Releases still publish from `v*` tags.
 
 GitHub Actions builds debug + release APKs on every push and attaches them as
 artifacts; pushing a `v*` tag also publishes them to a Release.
