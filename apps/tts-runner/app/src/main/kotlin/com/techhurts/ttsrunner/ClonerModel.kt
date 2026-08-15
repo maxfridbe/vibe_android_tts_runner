@@ -21,11 +21,11 @@ object ClonerModel {
 
     private val FILES = listOf(
         VoiceCloner.QSPK_ASSET to 48_703_976L,
-        VoiceCloner.QSTYLE_ASSET to 24_407_532L,  // fh_d10: PCA-256 front + 512x2, 418-pair expressive bank, centered-qwen 0.524 held-out
+        VoiceCloner.QSTYLE_ASSET to 24_407_532L,  // fh5_d10: qwen-RELABELED 514-pair bank (flywheel), centered-qwen 0.588 held-out; versioned name — retrains keep the same size
         RefineEngine.QCENTER_ASSET to 8_192L,     // qwen population center (2048 x f32): flips the refine to centered-qwen scoring
         VoiceCloner.SPK_ASSET to 84_084_349L,
         VoiceCloner.STYLE_ASSET to 8_404_363L,
-        RefineEngine.BASIS_ASSET to 19_910_684L,  // k=384 basis v3 (expressive refit) — new NAME because a refit keeps the same size, and size is the only cache-buster
+        RefineEngine.BASIS_ASSET to 19_910_684L,  // k=384 basis v5 (qwen-relabeled refit) — versioned name for the same reason
     )
 
     val totalBytes: Long get() = FILES.sumOf { it.second }
@@ -35,7 +35,8 @@ object ClonerModel {
 
     fun remove(ctx: Context) {
         FILES.forEach { (n, _) -> File(VoiceCloner.dir(ctx), n).delete() }
-        File(VoiceCloner.dir(ctx), RefineEngine.LEGACY_BASIS_ASSET).delete()
+        RefineEngine.OLD_BASIS_ASSETS.forEach { File(VoiceCloner.dir(ctx), it).delete() }
+        File(VoiceCloner.dir(ctx), VoiceCloner.LEGACY_QSTYLE_ASSET).delete()
     }
 
     @Volatile private var cancel = false

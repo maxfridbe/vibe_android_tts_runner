@@ -33,7 +33,15 @@ class VoiceCloner(private val ctx: Context) {
         const val SPK_ASSET = "spk_encoder.onnx"
         const val STYLE_ASSET = "style_encoder.onnx"
         const val QSPK_ASSET = "qwen_spk_encoder.onnx"
-        const val QSTYLE_ASSET = "style_encoder_qwen.onnx"
+        // The qwen head keeps one architecture, so every retrain is the SAME
+        // byte size and the downloader's size cache-buster never fires — the
+        // served name is versioned instead (like the basis). The legacy name
+        // still loads for side-loaded copies and older downloads.
+        const val QSTYLE_ASSET = "style_encoder_qwen_v5.onnx"
+        const val LEGACY_QSTYLE_ASSET = "style_encoder_qwen.onnx"
+
+        fun qstyleName(ctx: Context): String =
+            if (has(ctx, QSTYLE_ASSET)) QSTYLE_ASSET else LEGACY_QSTYLE_ASSET
 
         /** Two analyzers, same contract, different ears. ECAPA is a speaker-
          *  verification embedding (192 numbers of pure identity); the qwen
@@ -56,7 +64,8 @@ class VoiceCloner(private val ctx: Context) {
 
         /** Analyzer variants this phone can run, preferred first. */
         fun variants(ctx: Context): List<String> = buildList {
-            if (has(ctx, QSPK_ASSET) && has(ctx, QSTYLE_ASSET)) add(VARIANT_QWEN)
+            if (has(ctx, QSPK_ASSET) &&
+                (has(ctx, QSTYLE_ASSET) || has(ctx, LEGACY_QSTYLE_ASSET))) add(VARIANT_QWEN)
             if (has(ctx, SPK_ASSET) && has(ctx, STYLE_ASSET)) add(VARIANT_ECAPA)
         }
 
@@ -79,7 +88,7 @@ class VoiceCloner(private val ctx: Context) {
                 setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
             }
             val (spkName, styleName) = if (variant == VARIANT_QWEN)
-                QSPK_ASSET to QSTYLE_ASSET else SPK_ASSET to STYLE_ASSET
+                QSPK_ASSET to qstyleName(ctx) else SPK_ASSET to STYLE_ASSET
             spk = e.createSession(bytes(spkName), opts)
             style = e.createSession(bytes(styleName), opts)
             loadedVariant = variant

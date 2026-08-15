@@ -127,10 +127,12 @@ a set of small ONNX graphs trained for this repo (`models/cloner`, and
 about a second, with a **choice of two analyzers**: Qwen3-TTS's own speaker
 encoder (the shipped direction — the project now measures itself in
 **centered Qwen cosine**, which the ear has consistently agreed with) or
-ECAPA. The Qwen head is a supervised regressor trained through the frozen
-synthesiser on a 418-pair expressive bank of inverted real speakers (read
-speech + emotion + whisper); it scores **0.524** held-out centered-qwen —
-above the **0.4905** the desktop gradient inversions score on themselves.
+ECAPA. The Qwen head is a supervised regressor trained on a **qwen-relabeled
+514-pair bank** of real speakers (read speech + emotion + whisper + character
+voices, labels produced by the qwen-objective refine rather than ECAPA
+inversion — the ear kept siding with the qwen judge); it scores **0.588**
+held-out centered-qwen — well above the **0.4905** the desktop gradient
+inversions score on themselves.
 Delivery classes still missing from the training bank clone poorly until
 their inverted examples are added (whisper was fixed this way; high-energy
 voices are the current wave).
@@ -201,7 +203,7 @@ each from its own public host — no account or API token:
 | `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf` / `-Q8_0.gguf` + `mmproj-…-Q8_0.gguf` | Qwen talker + codec projector — [huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) |
 | `Qwen3-TTS-12Hz-1.7B-Base-Q4_0.gguf` | **not downloaded** — requantized on-device from the Q8 file (nobody hosts this quant; needed for the Adreno OpenCL kernels) |
 | `Qwen3-TTS-VD-Q4_K_M.gguf` + `mmproj-Qwen3-TTS-VD-Q8_0.gguf` | VoiceDesign talker + projector — this repo's [`models-v1` release](https://github.com/maxfridbe/vibe_android_tts_runner/releases/tag/models-v1) (upstream ships no VoiceDesign GGUF) |
-| `spk_encoder.onnx`, `style_encoder.onnx`, `qwen_spk_encoder.onnx`, `style_encoder_qwen.onnx`, `qwen_center.bin`, `style_basis_v3.bin` | on-device cloning graphs — this repo's [`models/cloner`](models/cloner) via `raw.githubusercontent.com` |
+| `spk_encoder.onnx`, `style_encoder.onnx`, `qwen_spk_encoder.onnx`, `style_encoder_qwen_v5.onnx`, `qwen_center.bin`, `style_basis_v5.bin` | on-device cloning graphs — this repo's [`models/cloner`](models/cloner) via `raw.githubusercontent.com` |
 
 The cloning graphs are fetched as raw files from the repo (no release plumbing),
 and re-download automatically if a retrained model of the same name changes

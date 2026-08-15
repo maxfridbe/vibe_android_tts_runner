@@ -37,17 +37,20 @@ import kotlin.math.sqrt
 class RefineEngine(private val ctx: Context) {
 
     companion object {
-        const val BASIS_ASSET = "style_basis_v3.bin"
-        // Pre-expressive-bank name, still honored for side-loaded copies. The
-        // rename is deliberate: a k=384 refit is byte-for-byte the same SIZE
-        // as its predecessor (the format fixes it) and the downloader's only
-        // cache-buster is size, so a same-name refit would never reach
-        // existing installs.
+        const val BASIS_ASSET = "style_basis_v5.bin"
+        // Older names, still honored for side-loaded copies and previous
+        // downloads. The version-in-the-name is deliberate: a k=384 refit is
+        // byte-for-byte the same SIZE as its predecessor (the format fixes
+        // it) and the downloader's only cache-buster is size, so a same-name
+        // refit would never reach existing installs.
+        val OLD_BASIS_ASSETS = listOf("style_basis_v3.bin", "style_basis.bin")
         const val LEGACY_BASIS_ASSET = "style_basis.bin"
 
         fun basisFile(ctx: Context): File =
-            File(VoiceCloner.dir(ctx), BASIS_ASSET).takeIf { it.length() > 0 }
-                ?: File(VoiceCloner.dir(ctx), LEGACY_BASIS_ASSET)
+            (listOf(BASIS_ASSET) + OLD_BASIS_ASSETS)
+                .map { File(VoiceCloner.dir(ctx), it) }
+                .firstOrNull { it.length() > 0 }
+                ?: File(VoiceCloner.dir(ctx), BASIS_ASSET)
         // Full-fidelity probe (disjoint from what any head trained or was
         // scored on) — used only for the seed and final-winner scores, so the
         // reported start/end cosines stay comparable to older runs.
