@@ -17,7 +17,7 @@ TOOL=$WORK/tooling
 PY=$WORK/venv/bin/python
 ABM_PY=$HOME/audiobook-maker/venv/bin/python
 CO=$WORK/clone_out
-export TG_TOKEN="7321403954:AAGcZxrFGHVTu_ycYwfzDc070QiZNUV_d4k" TG_CHAT="573950781"
+export TG_TOKEN="${TG_TOKEN:?set TG_TOKEN in the environment}" TG_CHAT="${TG_CHAT:?set TG_CHAT in the environment}"
 
 notify() {
   MSG="$1" python3 - >/dev/null 2>&1 <<'PY' || true

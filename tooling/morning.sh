@@ -22,7 +22,7 @@ PY=$WORK/venv/bin/python
 CORP=$WORK/corpora
 CO=$WORK/clone_out
 START=$(date +%s)
-export TG_TOKEN="7321403954:AAGcZxrFGHVTu_ycYwfzDc070QiZNUV_d4k" TG_CHAT="573950781"
+export TG_TOKEN="${TG_TOKEN:?set TG_TOKEN in the environment}" TG_CHAT="${TG_CHAT:?set TG_CHAT in the environment}"
 
 notify() {
   MSG="$1" python3 - >/dev/null 2>&1 <<'PY' || true
