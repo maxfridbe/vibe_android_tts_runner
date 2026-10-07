@@ -105,6 +105,12 @@ switching to CPU. CPU remains the recommended default until phone benchmarks
 establish whether GPU helps. No GPU speedup on physical Android hardware has
 been measured for this integration yet.
 
+A [Vulkan 1.1 decoder prototype](tooling/kitten_vulkan/README.md) targets Galaxy
+S10-class GPUs. Its graph conversion passes CPU numerical checks; native Vulkan
+execution and Android integration are still pending. The existing language-model
+Vulkan backend requires Vulkan 1.2. ARM builds now use an ARMv8-A CPU baseline
+instead of globally requiring the newer i8mm instruction set.
+
 Preset voices and expression conditioning are available; direct
 recording-based cloning and the upstream English grammar
 normalizer are not included. Spell out ambiguous numbers and abbreviations.

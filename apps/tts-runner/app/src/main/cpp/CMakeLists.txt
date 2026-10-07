@@ -11,6 +11,12 @@ project(ttsrunner_jni CXX C)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    # Galaxy S10 baseline: never compile the whole binary with i8mm/SVE or
+    # other optional instructions. GPU availability does not remove CPU work.
+    set(GGML_CPU_ARM_ARCH "armv8-a" CACHE STRING "" FORCE)
+endif()
 if(ANDROID_ABI STREQUAL "x86_64")
     set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
     set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
@@ -41,13 +47,6 @@ if(ANDROID)
     # offsets are 4KB-aligned).
     set(GGML_MMAP ON CACHE BOOL "" FORCE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
-    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        # +i8mm enables ggml's int8 matmul kernels (big quant-gemm speedup);
-        # needs a ~2021+ SoC (SD 888/8 Gen 1 and later, Tensor, Dimensity
-        # 1000+). Older phones SIGILL — drop i8mm here to support them.
-        set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -march=armv8.2-a+dotprod+fp16+i8mm")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+dotprod+fp16+i8mm")
-    endif()
 endif()
 
 # ggml-vulkan needs the SPIRV-Headers CMake package; the builder image
