@@ -11,8 +11,14 @@ project(ttsrunner_jni CXX C)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_BLAS OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+if(ANDROID_ABI STREQUAL "x86_64")
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+    set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+else()
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+endif()
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -69,7 +75,7 @@ set(LLAMA_SRC "$ENV{LLAMA_CPP_SRC}")
 if(NOT EXISTS "${LLAMA_SRC}/CMakeLists.txt")
     include(FetchContent)
     FetchContent_Declare(llama_cpp
-        URL https://github.com/ggml-org/llama.cpp/archive/f9e832c10e9444cb168ddcb579cc62c154f3068b.tar.gz
+        URL https://github.com/KittenML/kitten-tts-2-cpp/archive/1ce0bb504e5452795b52ca9a3c3950e982d82bb1.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP ON)
     FetchContent_MakeAvailable(llama_cpp)
     set(LLAMA_SRC ${llama_cpp_SOURCE_DIR})
@@ -78,12 +84,15 @@ if(NOT EXISTS "${LLAMA_SRC}/CMakeLists.txt")
 endif()
 add_subdirectory(${LLAMA_SRC} llama_build EXCLUDE_FROM_ALL)
 
-add_library(ttsrunner_jni SHARED tts_jni.cpp)
+add_library(ttsrunner_jni SHARED tts_jni.cpp kitten_jni.cpp)
 target_include_directories(ttsrunner_jni PRIVATE
+    ${LLAMA_SRC}
     ${LLAMA_SRC}/include
     ${LLAMA_SRC}/ggml/include
     ${LLAMA_SRC}/common
-    ${LLAMA_SRC}/tools/mtmd)
+    ${LLAMA_SRC}/tools/mtmd
+    ${LLAMA_SRC}/tools/kitten-tts
+    ${LLAMA_SRC}/vendor/nlohmann)
 if(GGML_OPENCL)
     target_link_libraries(ttsrunner_jni PRIVATE ${OpenCL_LIBRARY})
 endif()

@@ -99,6 +99,7 @@ class TtsService : Service() {
      *  read it, so a mismatch would play everything at the wrong pitch. */
     @Volatile private var jobRate = SAMPLE_RATE
     @Volatile private var stopRequested = false
+    @Volatile private var destroyed = false
     @Volatile private var paused = false
     @Volatile private var silent = false
     @Volatile private var transientJob = false
@@ -211,7 +212,7 @@ class TtsService : Service() {
         when (intent.action) {
             ACTION_STOP -> {
                 stopRequested = true
-                TtsEngine.nCancel()
+                TtsEngine.nCancel(); kitten?.cancel()
                 pendingFile().delete()   // an explicit stop must not resurrect the job
                 cancelResumeAlarm(this)
                 broadcast("stopped", 0, 0, "")
@@ -289,6 +290,7 @@ class TtsService : Service() {
             drainer = thread(name = "tts-queue") {
                 try {
                     while (true) {
+                        if (destroyed) break
                         val p = queued.poll() ?: break
                         runCatching { workThread?.join() }   // let an interactive job finish
                         runQueued(p)
@@ -323,6 +325,7 @@ class TtsService : Service() {
             fail("Internal error: ${t.javaClass.simpleName}: ${t.message}")
         } finally {
             java.io.File(filesDir, "job-inflight").delete()
+            synchronized(jobLock) { if (destroyed) releaseKitten() }
         }
     }
 
@@ -336,7 +339,7 @@ class TtsService : Service() {
         // thread once expired mid-generation, leaving two threads on one
         // llama context -> "prompt processing failed").
         stopRequested = true
-        TtsEngine.nCancel()
+        TtsEngine.nCancel(); kitten?.cancel()
         val previous = workThread
         val epoch: Int
         synchronized(jobLock) {
@@ -366,6 +369,7 @@ class TtsService : Service() {
                 // finally may run after its startJob promoted the service).
                 java.io.File(filesDir, "job-inflight").delete()
                 synchronized(jobLock) {
+                    if (destroyed) releaseKitten()
                     if (jobEpoch == epoch) {
                         working = false
                         wakeLock?.release(); wakeLock = null
@@ -415,7 +419,7 @@ class TtsService : Service() {
             }
             DebugLog.log(this, "TtsService",
                 "no $needEngine model; downloaded: $have\n  dir=$stDir\n  $detail")
-            fail("No ${if (needEngine == "supertonic") "Supertonic" else "Qwen"} model " +
+            fail("No ${ModelManager.engineLabel(needEngine)} model " +
                 "downloaded — get one in Settings"); return
         }
         // Backends: cpu | opencl | vulkan. OpenCL (Adreno) is only worthwhile
@@ -446,6 +450,11 @@ class TtsService : Service() {
         // Supertonic voices are style files, not recordings: resolve one here
         // and let the reference-audio check below apply only to Qwen.
         val supertonicJob = model.engine == "supertonic"
+        val kittenJob = model.engine == "kitten"
+        if (kittenJob && backend != "cpu") { fail("Kitten TTS 2 requires CPU"); return }
+        if (kittenJob && VoiceStore.kittenList(this).none { it.name == voiceName }) {
+            fail("Unknown Kitten voice: $voiceName"); return
+        }
         jobRate = SAMPLE_RATE
         if (supertonicJob) {
             supertonicStyle = resolveStyle(voiceName)
@@ -456,8 +465,8 @@ class TtsService : Service() {
         // design mode runs with NO speaker reference: the model invents a
         // voice from the seed; the UI can then adopt the output as a voice
         val voice = VoiceStore.list(this).find { it.name == voiceName }
-            ?: if (design || supertonicJob) null else VoiceStore.defaultVoice(this)
-        if (voice == null && !design && !supertonicJob) {
+            ?: if (design || supertonicJob || kittenJob) null else VoiceStore.defaultVoice(this)
+        if (voice == null && !design && !supertonicJob && !kittenJob) {
             fail("No voice imported — add one in TTS Runner"); return
         }
         DebugLog.log(this, "TtsService", "model=${model.id} voice=${voice?.file?.name ?: "(designing, seed=$seed)"}")
@@ -515,7 +524,7 @@ class TtsService : Service() {
         // the reason, so they can resume on another backend, rather than being
         // silently moved to CPU.
         if (cached < chunks.size && !ensureLoaded(model, backend)) {
-            val why = TtsEngine.nLastError().ifBlank { "unknown error" }
+            val why = if (kittenJob) kittenError else TtsEngine.nLastError().ifBlank { "unknown error" }
             abort(if (backend == "cpu") "Model load failed: $why"
                   else "$backend failed to start: $why — resume on CPU or pick another engine")
             return
@@ -523,6 +532,11 @@ class TtsService : Service() {
         // the engine's own rate now that it is loaded: everything downstream
         // (playback, WAV header, AAC encoder, stats) reads jobRate
         if (supertonicJob) jobRate = supertonic?.sampleRate ?: 44100
+        if (kittenJob) {
+            jobRate = KittenEngine.SAMPLE_RATE
+            kitten?.resetCancel()
+            if (stopRequested) kitten?.cancel()
+        }
         // ETA is derived from generation speed, so the clock starts after the
         // one-off model load
         jobStartMs = System.currentTimeMillis()
@@ -568,12 +582,13 @@ class TtsService : Service() {
                 // re-rolling a design triples an already slow job for nothing
                 pcm = when {
                     model.engine == "supertonic" -> generateSupertonic(chunk, seed)
+                    kittenJob -> generateKitten(chunk, voiceName, seed)
                     design -> generateOnce(chunk, "", instruct, seed, onFrames)
                     else -> generatePlausible(chunk, voice?.file?.absolutePath ?: "", instruct, seed, onFrames)
                 }
                 if (pcm == null) {
                     if (!stopRequested) {
-                        val why = TtsEngine.nLastError().ifBlank { "generation failed" }
+                        val why = if (kittenJob) kittenError else TtsEngine.nLastError().ifBlank { "generation failed" }
                         // the engine chose to stay on this backend; say so and let
                         // the job be resumed on another one
                         failed = if (backend == "cpu") why
@@ -866,10 +881,45 @@ class TtsService : Service() {
         return eng.generate(chunk, style, steps = 8, speed = 1.05f * pct / 100f, seed = seed)
     }
 
+    @Volatile private var kitten: KittenEngine? = null
+    private var kittenError = ""
+
+    private fun releaseKitten() {
+        kitten?.close(); kitten = null
+        loadedKey = null
+    }
+
+    private fun generateKitten(text: String, voice: String, seed: Int): ByteArray? = try {
+        checkNotNull(kitten) { "Kitten is not loaded" }.generate(text, voice, seed)
+    } catch (t: Throwable) {
+        kittenError = t.message ?: t.javaClass.simpleName
+        DebugLog.log(this, "Kitten", "Generation failed", t)
+        null
+    }
+
     private var loadedKey: String? = null
     private fun ensureLoaded(model: ModelManager.CatalogModel, backend: String): Boolean {
         val key = "${model.id}|$backend"
         if (loadedKey == key) return true
+        loadedKey = null
+        kitten?.close(); kitten = null
+        if (model.engine == "kitten") {
+            TtsEngine.nUnload()
+            supertonic?.close(); supertonic = null
+            broadcast("loading", 0, 0, model.label)
+            return try {
+                val eng = KittenEngine().also { kitten = it }
+                eng.load(ModelManager.kittenDir(this), bigCoreCount())
+                kittenError = ""
+                loadedKey = key
+                true
+            } catch (t: Throwable) {
+                kittenError = t.message ?: t.javaClass.simpleName
+                DebugLog.log(this, "Kitten", "Load failed", t)
+                kitten?.close(); kitten = null
+                false
+            }
+        }
         if (model.engine == "supertonic") {
             TtsEngine.nUnload()          // free the llama.cpp side first
             broadcast("loading", 0, 0, model.label)
@@ -1043,8 +1093,13 @@ class TtsService : Service() {
     }
 
     override fun onDestroy() {
+        synchronized(jobLock) {
+            destroyed = true
+            // Active inference releases its resources in the worker's finally block.
+            if (!working) releaseKitten()
+        }
         stopRequested = true
-        TtsEngine.nCancel()
+        TtsEngine.nCancel(); kitten?.cancel()
         TtsEngine.nUnload()
         super.onDestroy()
     }

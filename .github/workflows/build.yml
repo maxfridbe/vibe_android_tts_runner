@@ -25,8 +25,7 @@ jobs:
       matrix:
         app: ${{ fromJson(needs.discover.outputs.apps) }}
     steps:
-      # Full history + tags: build.sh derives versionCode from the commit
-      # count and versionName from `git describe`.
+      # Keep history and tags available for release metadata.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -88,9 +87,12 @@ jobs:
         run: |
           docker run --rm -v "$PWD/output:/out" androidbase-builder sh -c '
             set -e
+            apksigner=$(find /opt/android-sdk/build-tools -name apksigner -type f | sort -V | tail -1)
+            test -n "$apksigner"
             for f in /out/*/*.apk; do
               echo "== $f"
-              /opt/android-sdk/build-tools/34.0.0/apksigner verify --print-certs "$f" | head -4
+              "$apksigner" verify --print-certs "$f" > /tmp/apk-signature.txt
+              head -4 /tmp/apk-signature.txt
             done'
 
       - uses: actions/upload-artifact@v4

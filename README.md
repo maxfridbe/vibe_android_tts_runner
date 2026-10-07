@@ -1,4 +1,4 @@
-# TTS Runner — on-device Qwen3-TTS for Android
+# TTS Runner — on-device speech engines for Android
 
 [![build](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml/badge.svg)](https://github.com/maxfridbe/vibe_android_tts_runner/actions/workflows/build.yml)
 [![Install with Obtainium](https://img.shields.io/badge/Install%20with-Obtainium-6c4fd3?logo=android&logoColor=white)](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.techhurts.ttsrunner%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fmaxfridbe%252Fvibe_android_tts_runner%2522%252C%2522author%2522%253A%2522maxfridbe%2522%252C%2522name%2522%253A%2522TTS%2520Runner%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522apkFilterRegEx%255C%2522%253A%2520%255C%2522release%255C%2522%252C%2520%255C%2522invertAPKFilter%255C%2522%253A%2520false%252C%2520%255C%2522about%255C%2522%253A%2520%255C%2522On-device%2520text-to-speech%2520and%2520voice%2520cloning.%2520No%2520server%252C%2520no%2520account.%255C%2522%257D%2522%257D)
@@ -10,12 +10,14 @@ the APK below.
 
 Share any text or article link to **TTS Runner** and it reads it aloud in a
 cloned voice, entirely on-device: no server, no account, no audio leaving the
-phone. Two engines ship side by side — [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
+phone. Three engines ship side by side — [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
 Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
-(99M ONNX, faster than real time, style voices).
+(99M ONNX, faster than real time, style voices), plus
+[Kitten TTS 2](https://huggingface.co/KittenML/kitten-tts-2) (CPU, built-in voices,
+24 kHz). Kitten TTS 2: **Powered by Stellon Labs**.
 
-- **Speakers** — a tab per engine: ⚡ Supertonic (style files) and 🐢 Qwen
-  (reference recordings). Clone from a recording — trimming it to the section
+- **Speakers** — a tab per engine: Supertonic (style files), Qwen
+  (reference recordings), and Kitten (38 preset voices). Clone from a recording — trimming it to the section
   you want on a waveform first — record one now, *design* one from a
   description, import styles, or pull ready-made speakers from the built-in
   **voice library** (a set of generated, no-real-person Supertonic voices). There
@@ -39,7 +41,7 @@ Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
   killed engine (same backend, never a silent switch) as long as each attempt
   makes progress, so a long job survives any number of kills unattended.
 - **Backends** — per engine, and per phone: CPU / OpenCL / Vulkan for the Qwen
-  models, CPU / NNAPI / XNNPACK for Supertonic. The app stars the one measured
+  models, CPU / NNAPI / XNNPACK for Supertonic, CPU for Kitten. The app stars the one measured
   fastest for the detected GPU, says why, and never switches behind your back.
 - **Backup folder** — point it at a real folder and every speaker is mirrored
   there, and anything the folder has that the phone lacks is imported. A
@@ -70,6 +72,79 @@ The first build takes a while: the builder image fetches the Android SDK/NDK,
 Vulkan headers and a current `glslc`, plus a pinned llama.cpp, then compiles
 llama.cpp (CPU + Vulkan + OpenCL) for arm64. Later builds reuse the image —
 pass `SKIP_IMAGE_BUILD=1` to skip the check.
+
+Kitten uses the pinned `KittenML/kitten-tts-2-cpp` fork for its TQ2_1 weights;
+the existing Qwen patches still apply. Rebuild the image when upgrading from
+an older checkout. The default APK is ARM64. To also test on an x86_64 emulator:
+
+```sh
+BUILD_TASK='assembleDebug lintDebug -PandroidAbis=arm64-v8a,x86_64' ./build.sh tts-runner
+```
+
+### Kitten TTS 2
+
+In Settings, select **Kitten TTS 2** and Download (about 1.35 GB). Then open
+Speakers → Kitten and choose a preset, or select a `Kitten: …` voice in Jobs.
+The speaker determines the engine for previews, jobs, shared text, and the HTTP
+API. Chats offer Kitten when Supertonic is not installed, matching the chat's
+existing preference for Supertonic. No remote synthesis service is used.
+
+The download pins model revision `d820e8476c35e637dc5c89a1e66c345f620bd0c0`:
+the lossless TQ2_1 GGUF, the published `student_w4` TorchScript decoder, its
+matching voice conditioning, and config. Downloads resume, validate exact file
+sizes, and publish the voice index only after all files are complete.
+The native fork is pinned to `1ce0bb504e5452795b52ca9a3c3950e982d82bb1`.
+
+Kitten supports CPU only. Its preset voices and expression conditioning are
+available; direct recording-based cloning and the upstream English grammar
+normalizer are not included. Spell out ambiguous numbers and abbreviations.
+The existing speed slider applies only to Supertonic. The decoder uses PyTorch
+Android 2.1.0; its bundled native decoder has 4 KB ELF alignment, so this is
+not a 16 KB-ready release build. The sampling seed controls the speech tokens;
+decoder noise is not seeded by the Android Java API.
+
+The weights have their own [Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md).
+The complete license and attribution ship in the APK and are readable from
+Settings → Kitten licenses and attribution.
+
+### Test with android_screen_runner
+
+Build [android_screen_runner](https://github.com/maxfridbe/android_screen_runner)
+in a sibling checkout, following its README. Use an attached ARM64 device or
+its Android 34 x86_64 emulator with at least 6 GB RAM and 3 GB free storage.
+For an emulator, set `hw.ramSize = 6144M` in its AVD's `config.ini` while stopped.
+Use the dual-ABI build above, then run from this repository:
+
+```sh
+export RUNNER_SCRIPTS="$PWD/../android_screen_runner/scripts/emulator.sh"
+export SCREENSHOT_FORMAT=png
+export AVD_DIR="$PWD/../android_screen_runner/avd"
+../android_screen_runner/artifacts/android-screen-runner run tooling/kitten-download.ts
+../android_screen_runner/artifacts/android-screen-runner run tooling/kitten-smoke.ts
+../android_screen_runner/artifacts/android-screen-runner run tooling/kitten-cancel.ts
+```
+
+For an attached phone, also set `RUNNER_MODE=device`. The first script installs
+the newest debug APK and downloads the model through Settings; the second
+selects Bruno, saves speech, checks job metadata, and pulls a 24 kHz WAV into
+`screenshots/kitten-smoke.wav`. The third stops a multi-chunk job and verifies
+that another job completes without restarting the engine. All three capture
+screenshots. A failed or empty synthesis fails the test. Run `check` in place
+of `run` to validate scripts without a device.
+
+Validated on 2026-10-07 with android_screen_runner commit `15cce01`, an Android
+34 x86_64 emulator (6 GB RAM), and APK `26.1007.1545`:
+
+- Containerized `clean assembleDebug lintDebug` passed for ARM64 and x86_64;
+  lint reported no errors (166 warnings).
+- Download, preset selection, synthesis/export, cancellation, and immediate
+  recovery all passed through the UI scripts.
+- Bruno produced 3.00 seconds of non-silent 24 kHz mono PCM in 26.43 seconds;
+  the recovery job produced 3.28 seconds in 26.81 seconds. These are emulator
+  timings, not phone benchmarks.
+- Screenshots, the WAV, and its validation metadata are in `screenshots/`.
+  ARM64 was compiled but has not been tested on a physical device. Other
+  engines were compiled but were not exercised in this Kitten test run.
 
 Signing: `build.sh` generates `keystore/` on first run (self-signed, gitignored)
 and reuses it, so reinstalls always match. CI does the same; to sign with your
@@ -104,6 +179,12 @@ artifacts; pushing a `v*` tag also publishes them to a Release.
    tags sit above the keyboard (see `docs/expression-tags.md` — they were found
    by probing the model, not documented upstream), and long-pressing a line
    drags it anywhere in the timeline.
+
+For device testing, open **Settings → Debug → Share logs_date.gz**. The share
+sheet attaches a gzip-compressed UTF-8 report named `logs_<UTC date and time>.gz`.
+It includes app/device versions, memory and page size, model inventory, recent
+process exits, the retained app log, and recent main/crash logcat output. The
+report is collected in the background; choose a destination in the share sheet.
 
 Shared URLs are fetched and run through [Readability4J](https://github.com/dankito/Readability4J)
 — the Kotlin port of Mozilla's Readability.js, the Firefox Reader View

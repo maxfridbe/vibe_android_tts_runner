@@ -62,7 +62,29 @@ object ModelManager {
 
     fun supertonicDir(ctx: Context) = File(modelsDir(ctx), "supertonic-3").apply { mkdirs() }
 
+    private const val KITTEN_BASE = "https://huggingface.co/KittenML/kitten-tts-2/resolve/d820e8476c35e637dc5c89a1e66c345f620bd0c0"
+    val KITTEN_SIZES = mapOf("config.json" to 2197L, "model-tq2_1.gguf" to 1029076832L,
+        "decoder.pt" to 312339253L, "voices.json" to 13531605L)
+    fun kittenDir(ctx: Context) = File(modelsDir(ctx), "kitten-tts-2").apply { mkdirs() }
+    fun engineLabel(engine: String) = when (engine) {
+        "kitten" -> "Kitten TTS 2"
+        "supertonic" -> "Supertonic"
+        else -> "Qwen"
+    }
+
     val CATALOG = listOf(
+        CatalogModel(
+            id = "kitten-tts-2", label = "Kitten TTS 2 (1.35 GB, CPU, preset voices)",
+            talkerUrl = "", talkerFile = "kitten-tts-2/model-tq2_1.gguf",
+            mmprojUrl = "", mmprojFile = "kitten-tts-2/decoder.pt",
+            totalBytes = KITTEN_SIZES.values.sum(), engine = "kitten",
+            extraFiles = listOf(
+                "$KITTEN_BASE/config.json" to "config.json",
+                "$KITTEN_BASE/cpp/model-tq2_1.gguf" to "model-tq2_1.gguf",
+                "$KITTEN_BASE/cpp/student_w4/decoder.pt" to "decoder.pt",
+                "$KITTEN_BASE/cpp/student_w4/voices.json" to "voices.json",
+            ),
+        ),
         CatalogModel(
             id = "1.7b-q4",
             label = "Qwen3-TTS 1.7B Q4_K_M (1.5 GB, recommended)",
@@ -122,7 +144,10 @@ object ModelManager {
     }
 
     fun isDownloaded(ctx: Context, m: CatalogModel): Boolean =
-        if (m.extraFiles.isNotEmpty())
+        if (m.engine == "kitten")
+            KITTEN_SIZES.all { (name, size) -> File(kittenDir(ctx), name).length() == size } &&
+                File(kittenDir(ctx), "voice-index.json").length() > 2
+        else if (m.extraFiles.isNotEmpty())
             m.extraFiles.all { (_, n) -> File(supertonicDir(ctx), n).exists() }
         else File(modelsDir(ctx), m.talkerFile).exists() && File(modelsDir(ctx), m.mmprojFile).exists()
 
@@ -131,7 +156,7 @@ object ModelManager {
         File(supertonicDir(ctx), "styles").listFiles { f -> f.extension == "json" }
             ?.sortedBy { it.name } ?: emptyList()
 
-    val PLAYABLE_ENGINES = listOf("supertonic", "qwen")
+    val PLAYABLE_ENGINES = listOf("supertonic", "kitten", "qwen")
 
     fun designModel(ctx: Context): CatalogModel? =
         CATALOG.find { it.designOnly && isDownloaded(ctx, it) }
@@ -185,8 +210,29 @@ object ModelManager {
             if (m.extraFiles.isNotEmpty()) {
                 // multi-file model (Supertonic): graphs into their own dir,
                 // then the published voice styles
-                val dir = if (m.engine == "supertonic") "supertonic-3" else ""
-                for ((url, name) in m.extraFiles) downloadOne(ctx, url, "$dir/$name", listener)
+                val dir = if (m.engine == "supertonic") "supertonic-3" else m.id
+                for ((url, name) in m.extraFiles) {
+                    val expected = if (m.engine == "kitten") KITTEN_SIZES[name] else null
+                    val dest = File(modelsDir(ctx), "$dir/$name")
+                    if (expected != null && dest.exists() && dest.length() != expected) dest.delete()
+                    downloadOne(ctx, url, "$dir/$name", listener)
+                    if (expected != null && dest.length() != expected) {
+                        dest.delete()
+                        throw java.io.IOException("Wrong size for $name; download again")
+                    }
+                }
+                if (m.engine == "kitten") {
+                    val voices = org.json.JSONObject(File(kittenDir(ctx), "voices.json").readText())
+                    val names = voices.keys().asSequence().sorted().toList()
+                    require(names.isNotEmpty()) { "Kitten voice catalog is empty" }
+                    val index = File(kittenDir(ctx), "voice-index.json")
+                    val tmp = File(kittenDir(ctx), "voice-index.json.part")
+                    tmp.outputStream().use {
+                        it.write(org.json.JSONArray(names).toString().toByteArray(Charsets.UTF_8))
+                        it.fd.sync()
+                    }
+                    check(tmp.renameTo(index)) { "Cannot save Kitten voice index" }
+                }
                 if (m.engine == "supertonic") {
                     for (s in SUPERTONIC_STYLES) {
                         listener.onProgress("voice style $s", 0, 0)
@@ -233,9 +279,11 @@ object ModelManager {
         val part = File(modelsDir(ctx), "$fileName.part")
         var attempt = 0
         while (true) {
+            var conn: HttpURLConnection? = null
             try {
+                if (downloadCanceled) throw InterruptedException()
                 val existing = if (part.exists()) part.length() else 0L
-                val conn = URL(url).openConnection() as HttpURLConnection
+                conn = URL(url).openConnection() as HttpURLConnection
                 conn.connectTimeout = 20000
                 conn.readTimeout = 120000
                 conn.instanceFollowRedirects = true
@@ -243,22 +291,23 @@ object ModelManager {
                 conn.connect()
                 val resumed = conn.responseCode == 206
                 val total = if (resumed) existing + conn.contentLengthLong else conn.contentLengthLong
-                val out = RandomAccessFile(part, "rw")
-                out.seek(if (resumed) existing else 0L)
-                var done = if (resumed) existing else 0L
-                conn.inputStream.use { input ->
-                    val buf = ByteArray(128 * 1024)
-                    while (true) {
-                        if (downloadCanceled) { out.close(); throw InterruptedException() }
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        done += n
-                        listener.onProgress(fileName, done, total)
+                RandomAccessFile(part, "rw").use { out ->
+                    if (!resumed) out.setLength(0)
+                    out.seek(if (resumed) existing else 0L)
+                    var done = if (resumed) existing else 0L
+                    conn.inputStream.use { input ->
+                        val buf = ByteArray(128 * 1024)
+                        while (true) {
+                            if (downloadCanceled) throw InterruptedException()
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            done += n
+                            listener.onProgress(fileName, done, total)
+                        }
                     }
+                    out.fd.sync()
                 }
-                out.close()
-                conn.disconnect()
                 if (total > 0 && part.length() < total) throw java.io.IOException("short read: ${part.length()}/$total")
                 if (!part.renameTo(dest)) throw java.io.IOException("rename failed")
                 return
@@ -268,6 +317,8 @@ object ModelManager {
                 attempt++
                 if (attempt >= 5) throw e
                 Thread.sleep(2000L * (1 shl attempt))
+            } finally {
+                conn?.disconnect()
             }
         }
     }

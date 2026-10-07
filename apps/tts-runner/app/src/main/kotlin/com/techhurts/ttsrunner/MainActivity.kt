@@ -407,19 +407,19 @@ class MainActivity : AppCompatActivity() {
                 setText("The quick brown fox jumps over the lazy dog, then reads the entire internet aloud.")
                 minLines = 3
                 background = null
-                hint = "Text to read"
+                hint = "Text to read"; contentDescription = "Text to read"
             }
             addView(jobText)
 
             // voice and mode on separate lines: side by side, a long speaker
             // name squeezed "Save file" into one letter per line on a phone
-            voicePickBtn = Button(context).apply { setOnClickListener { pickVoiceDialog() } }
+            voicePickBtn = Button(context).apply { contentDescription = "Choose speaker"; setOnClickListener { pickVoiceDialog() } }
             addView(voicePickBtn, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             val modeGroup = RadioGroup(context).apply { orientation = LinearLayout.VERTICAL }
-            modeGroup.addView(RadioButton(context).apply { text = "Listen"; id = 1; isChecked = true })
-            modeGroup.addView(RadioButton(context).apply { text = "Save file"; id = 2 })
-            modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == 2 }
+            modeGroup.addView(RadioButton(context).apply { text = "Listen"; id = R.id.mode_listen; isChecked = true })
+            modeGroup.addView(RadioButton(context).apply { text = "Save file"; id = R.id.mode_save })
+            modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == R.id.mode_save }
             addView(modeGroup)
 
             // Speech speed. Supertonic's duration predictor divides by a pace
@@ -520,12 +520,7 @@ class MainActivity : AppCompatActivity() {
      *  anymore: a Supertonic style is offered when a Supertonic model is
      *  installed, a Qwen recording when a Qwen model is — the voice you pick
      *  decides the engine. */
-    private fun voicesForCurrentModel(): List<String> = buildList {
-        if (ModelManager.modelForEngine(this@MainActivity, "supertonic") != null)
-            addAll(VoiceStore.styleList(this@MainActivity).map { it.name })
-        if (ModelManager.modelForEngine(this@MainActivity, "qwen") != null)
-            addAll(VoiceStore.list(this@MainActivity).map { it.name })
-    }
+    private fun voicesForCurrentModel(): List<String> = VoiceStore.available(this).map { it.name }
 
     private fun pickVoiceDialog() {
         val names = voicesForCurrentModel()
@@ -546,12 +541,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun startTtsJob(text: String, title: String, save: Boolean, voiceName: String? = null): Boolean {
         // engine follows the voice; the voice follows the pick or the default
-        val voice = voiceName ?: pickedVoice ?: VoiceStore.defaultVoice(this)?.name
+        val voice = voiceName ?: pickedVoice ?: voicesForCurrentModel().firstOrNull()
         val engine = if (voice != null) VoiceStore.engineOf(this, voice) else "qwen"
         val model = ModelManager.modelForEngine(this, engine)
         if (model == null) {
-            toast("Download a ${if (engine == "supertonic") "Supertonic" else "Qwen"} model (Settings)")
+            toast("Download a ${ModelManager.engineLabel(engine)} model (Settings)")
             return false
+        }
+        if (model.engine == "kitten") {
+            if (voice == null || VoiceStore.kittenList(this).none { it.name == voice }) {
+                toast("Choose a Kitten preset voice"); return false
+            }
+            startForegroundService(Intent(this, TtsService::class.java)
+                .setAction(TtsService.ACTION_SPEAK)
+                .putExtra(TtsService.EXTRA_TEXT, text)
+                .putExtra(TtsService.EXTRA_TITLE, title)
+                .putExtra(TtsService.EXTRA_VOICE, voice)
+                .putExtra(TtsService.EXTRA_ENGINE, "kitten")
+                .putExtra(TtsService.EXTRA_BACKEND, "cpu")
+                .putExtra(TtsService.EXTRA_SAVE, save))
+            ui.postDelayed({ refreshJobsIfChanged() }, 500)
+            return true
         }
         if (model.engine == "supertonic") {
             val style = voiceName?.takeIf { VoiceStore.styleFile(this, it) != null }
@@ -653,7 +663,7 @@ class MainActivity : AppCompatActivity() {
         col.title("Speakers")
         col.caption("Each model keeps its own kind of speaker: Supertonic uses style files " +
             "(⚡ about a second a sentence), the Qwen models use reference recordings " +
-            "(🐢 tens of seconds a sentence).")
+            "(🐢 tens of seconds a sentence). Kitten TTS 2 uses built-in preset voices.")
 
         val toggle = com.google.android.material.button.MaterialButtonToggleGroup(this).apply {
             isSingleSelection = true
@@ -664,15 +674,17 @@ class MainActivity : AppCompatActivity() {
                 com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
                 id = idNum; text = label
             }
-        toggle.addView(tab(1, "⚡ Supertonic"),
+        toggle.addView(tab(1, "Supertonic"),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        toggle.addView(tab(2, "🐢 Qwen"),
+        toggle.addView(tab(2, "Qwen"),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        toggle.check(if (speakersEngine() == "supertonic") 1 else 2)
+        toggle.addView(tab(3, "Kitten").apply { contentDescription = "Kitten speakers" },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        toggle.check(when (speakersEngine()) { "supertonic" -> 1; "kitten" -> 3; else -> 2 })
         toggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
             if (isChecked) {
                 prefs().edit().putString("speakers_engine",
-                    if (checkedId == 1) "supertonic" else "qwen").apply()
+                    when (checkedId) { 1 -> "supertonic"; 3 -> "kitten"; else -> "qwen" }).apply()
                 rebuildVoices()
             }
         }
@@ -960,11 +972,33 @@ class MainActivity : AppCompatActivity() {
                 }
                 action(Icons.DOWNLOAD, "Library…") { voiceLibraryDialog() }
                 action(Icons.FOLDER, "Backup ▾") { filesMenu(it) }
-            } else {
+            } else if (engine == "qwen") {
                 action(Icons.PLUS, "Add ▾") { cloneMenu(it) }
                 action(Icons.WAND, "Design") { designVoiceDialog() }
                 action(Icons.FOLDER, "Backup ▾") { filesMenu(it) }
             }
+        }
+
+        if (engine == "kitten") group("Kitten TTS 2 speakers",
+                "Built-in presets · on-device CPU · 24 kHz", VoiceStore.kittenList(this).size) {
+            val presets = VoiceStore.kittenList(this@MainActivity)
+            if (presets.isEmpty()) addView(TextView(context).apply {
+                text = "Download Kitten TTS 2 in Settings to use its preset voices."
+            })
+            for (v in presets) addView(card {
+                val row = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+                row.addView(Button(context).apply {
+                    text = v.name.removePrefix(KittenEngine.VOICE_PREFIX)
+                    contentDescription = "Use ${v.name}"
+                    setOnClickListener {
+                        pickedVoice = v.name
+                        selectTab(TAB_JOBS)
+                        refreshVoiceLabel()
+                    }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(previewControl(v, VoiceStore.previewFile(this@MainActivity, v.name, groupModelId).exists()))
+                addView(row)
+            })
         }
 
         if (engine == "supertonic") group("⚡ Supertonic 3 speakers",
@@ -1319,7 +1353,8 @@ class MainActivity : AppCompatActivity() {
      *  Supertonic style, anything else a Qwen recording. This is unambiguous
      *  where the name is not: a recording and a style can share a name. */
     private fun engineOfVoice(v: VoiceStore.Voice): String =
-        if (v.file.extension.equals("json", true)) "supertonic" else "qwen"
+        if (v.file.extension == "kitten") "kitten"
+        else if (v.file.extension.equals("json", true)) "supertonic" else "qwen"
 
     /** The model that will voice this speaker — its engine's, not a global
      *  pick — so previews are cached and played under the right model and a
@@ -1330,7 +1365,7 @@ class MainActivity : AppCompatActivity() {
     private fun previewVoice(v: VoiceStore.Voice, btn: ImageButton) {
         val model = modelFor(v)
         if (model == null) {
-            val eng = if (engineOfVoice(v) == "supertonic") "Supertonic" else "Qwen"
+            val eng = ModelManager.engineLabel(engineOfVoice(v))
             toast("Download a $eng model to hear this speaker (Settings)"); return
         }
         val cached = VoiceStore.previewFile(this, v.name, model.id)
@@ -2147,14 +2182,14 @@ class MainActivity : AppCompatActivity() {
             // catalog entry to act on
             modelGroup = RadioGroup(context)
             for ((i, m) in ModelManager.CATALOG.withIndex()) {
-                modelGroup.addView(RadioButton(context).apply { text = m.label; id = i })
+                modelGroup.addView(RadioButton(context).apply { text = m.label; id = i; contentDescription = "Model ${m.id}" })
             }
             addView(modelGroup)
-            modelStatus = TextView(context)
+            modelStatus = TextView(context).apply { contentDescription = "Model download status" }
             addView(modelStatus)
             modelProgress = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal)
             addView(modelProgress)
-            modelBtn = Button(context).apply { setOnClickListener { onModelButton() } }
+            modelBtn = Button(context).apply { contentDescription = "Download selected model"; setOnClickListener { onModelButton() } }
             addView(modelBtn)
             preferBtn = Button(context, null,
                 com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
@@ -2169,6 +2204,19 @@ class MainActivity : AppCompatActivity() {
             // checked BEFORE the listener attaches (the loop that OOM'd the FE)
             modelGroup.check(0)
             modelGroup.setOnCheckedChangeListener { _, _ -> refreshModelUi() }
+        })
+
+        col.caption("Kitten TTS 2 · Powered by Stellon Labs. " +
+            "Stellon Labs Community License: https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md. " +
+            "Kitten uses CPU and built-in voices; on-device voice cloning is not available.")
+        col.addView(Button(this).apply {
+            text = "Kitten licenses and attribution"
+            setOnClickListener {
+                val license = listOf("NOTICE.txt", "kitten-tts-2.txt", "kitten-runtime.txt", "llama-cpp.txt")
+                    .joinToString("\n\n") { assets.open("licenses/$it").bufferedReader().use { r -> r.readText() } }
+                MaterialAlertDialogBuilder(this@MainActivity).setTitle("Kitten licenses")
+                    .setMessage(license).setPositiveButton("Close", null).show()
+            }
         })
 
         // one backend card per engine that has a model, so the compute choice
@@ -2307,6 +2355,40 @@ class MainActivity : AppCompatActivity() {
 
         col.addView(card {
             addView(TextView(context).apply { text = "Debug"; textSize = 17f; setTypeface(typeface, Typeface.BOLD) })
+            addView(Button(context).apply {
+                text = getString(R.string.share_logs)
+                contentDescription = getString(R.string.share_logs)
+                setOnClickListener {
+                    isEnabled = false
+                    text = getString(R.string.preparing_logs)
+                    val app = applicationContext
+                    thread(name = "export-logs") {
+                        val result = runCatching { DebugLog.exportGzip(app) }
+                        runOnUiThread {
+                            isEnabled = true
+                            text = getString(R.string.share_logs)
+                            if (!isFinishing && !isDestroyed) {
+                                result.onSuccess { file ->
+                                    runCatching {
+                                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                                            this@MainActivity, "$packageName.files", file)
+                                        val send = Intent(Intent.ACTION_SEND)
+                                            .setType("application/gzip")
+                                            .putExtra(Intent.EXTRA_STREAM, uri)
+                                            .putExtra(Intent.EXTRA_SUBJECT, file.name)
+                                            .apply { clipData = android.content.ClipData.newRawUri(file.name, uri) }
+                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        startActivity(Intent.createChooser(send, getString(R.string.share_logs)))
+                                    }.onFailure { toast(getString(R.string.share_logs_failed, it.message)) }
+                                }.onFailure {
+                                    DebugLog.log(app, "DebugLog", "Log export failed", it)
+                                    toast(getString(R.string.share_logs_failed, it.message))
+                                }
+                            }
+                        }
+                    }
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             val statusText = TextView(context).apply { textSize = 12f; setTypeface(Typeface.MONOSPACE) }
             addView(statusText)
             addView(LinearLayout(context).apply {
@@ -2377,7 +2459,7 @@ class MainActivity : AppCompatActivity() {
         preferBtn.visibility = if (have && !m.designOnly && peers.size > 1 &&
             ModelManager.modelForEngine(this, m.engine)?.id != m.id) View.VISIBLE else View.GONE
         preferBtn.text = Icons.label(this, Icons.CHECK,
-            "Use ${m.label} for ${if (m.engine == "supertonic") "Supertonic" else "Qwen"}")
+            "Use ${m.label} for ${ModelManager.engineLabel(m.engine)}")
     }
 
     private fun onModelButton() {
@@ -2395,7 +2477,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 override fun onDone() {
-                    runOnUiThread { downloading = false; refreshModelUi(); toast("Model ready") }
+                    runOnUiThread { downloading = false; refreshModelUi(); refreshVoiceLabel(); toast("Model ready") }
                 }
                 override fun onError(message: String) {
                     runOnUiThread { downloading = false; refreshModelUi(); toast("Download: $message") }

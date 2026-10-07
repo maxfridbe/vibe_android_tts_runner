@@ -247,7 +247,7 @@ class TalkActivity : AppCompatActivity() {
     /** Speakers the loaded model can actually use. */
     private fun voicesForModel(): List<String> =
         if (supertonicSelected()) VoiceStore.styleList(this).map { it.name }
-        else VoiceStore.list(this).map { it.name }
+        else VoiceStore.available(this).map { it.name }
 
     private fun setupVoices(preferred: String?) {
         val fast = supertonicSelected()
@@ -335,7 +335,7 @@ class TalkActivity : AppCompatActivity() {
             .putExtra(TtsService.EXTRA_TEXT, line.text)
             .putExtra(TtsService.EXTRA_TITLE, if (save) line.text.take(40) else "Talk")
             .putExtra(TtsService.EXTRA_VOICE, line.voice)
-            .putExtra(TtsService.EXTRA_ENGINE, if (supertonicSelected()) "supertonic" else "qwen")
+            .putExtra(TtsService.EXTRA_ENGINE, VoiceStore.engineOf(this, line.voice))
             .putExtra(TtsService.EXTRA_BACKEND,
                 Backends.current(this, VoiceStore.engineOf(this, line.voice)))
             .putExtra(TtsService.EXTRA_EPHEMERAL, !save)

@@ -11,6 +11,21 @@ object VoiceStore {
 
     data class Voice(val name: String, val file: File)
 
+    fun kittenList(ctx: Context): List<Voice> = runCatching {
+        val dir = ModelManager.kittenDir(ctx)
+        val names = org.json.JSONArray(File(dir, "voice-index.json").readText())
+        (0 until names.length()).map {
+            val name = names.getString(it)
+            Voice(KittenEngine.VOICE_PREFIX + name, File(dir, "presets/$name.kitten"))
+        }
+    }.getOrDefault(emptyList())
+
+    fun available(ctx: Context): List<Voice> = buildList {
+        if (ModelManager.modelForEngine(ctx, "supertonic") != null) addAll(styleList(ctx))
+        if (ModelManager.modelForEngine(ctx, "kitten") != null) addAll(kittenList(ctx))
+        if (ModelManager.modelForEngine(ctx, "qwen") != null) addAll(list(ctx))
+    }
+
     private fun dir(ctx: Context): File = File(ctx.filesDir, "voices").apply { mkdirs() }
 
     fun list(ctx: Context): List<Voice> =
@@ -163,7 +178,8 @@ object VoiceStore {
     /** The engine a speaker needs: a style file is Supertonic, a reference
      *  recording is Qwen. This is what decides the model, not any global pick. */
     fun engineOf(ctx: Context, name: String): String =
-        if (isStyle(ctx, name)) "supertonic" else "qwen"
+        if (name.startsWith(KittenEngine.VOICE_PREFIX)) "kitten"
+        else if (isStyle(ctx, name)) "supertonic" else "qwen"
 
     fun label(ctx: Context, name: String): String = label(ctx, name, isStyle(ctx, name))
 

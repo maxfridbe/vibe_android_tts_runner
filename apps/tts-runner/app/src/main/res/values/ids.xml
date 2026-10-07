@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="mode_listen" type="id" />
+    <item name="mode_save" type="id" />
+</resources>

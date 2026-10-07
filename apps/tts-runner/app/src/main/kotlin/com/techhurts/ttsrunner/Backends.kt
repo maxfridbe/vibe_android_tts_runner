@@ -27,9 +27,17 @@ object Backends {
         Option("xnnpack", "CPU · XNNPACK", "ORT's optimised kernels — slower on these graphs, kept for comparison"),
     )
 
-    fun options(engine: String): List<Option> = if (engine == "supertonic") ONNX else LLAMA
+    fun options(engine: String): List<Option> = when (engine) {
+        "kitten" -> listOf(Option("cpu", "CPU", "Kitten's TQ2_1 weights and S3 decoder run on CPU"))
+        "supertonic" -> ONNX
+        else -> LLAMA
+    }
 
-    private fun key(engine: String) = if (engine == "supertonic") "backend_onnx" else "backend"
+    private fun key(engine: String) = when (engine) {
+        "kitten" -> "backend_kitten"
+        "supertonic" -> "backend_onnx"
+        else -> "backend"
+    }
 
     fun current(ctx: Context, engine: String): String {
         val p = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
@@ -53,6 +61,7 @@ object Backends {
     /** @param info output of TtsEngine.nDeviceInfo()
      *  @return the option id to star, and why it is starred */
     fun recommend(engine: String, info: String, gpuCapable: Boolean): Pair<String, String> {
+        if (engine == "kitten") return "cpu" to "Kitten TTS 2 supports CPU inference"
         val adrenoCl = info.contains("OpenCL") && info.contains("Adreno")
         val vulkanLine = info.lines().find { it.contains("Vulkan") } ?: ""
         val vulkanNonAdreno = vulkanLine.isNotEmpty() && !vulkanLine.contains("Adreno")

@@ -7,6 +7,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import java.util.zip.GZIPOutputStream
 
 /** Append-only debug log in filesDir, written from both the UI and :engine
  *  processes (same filesDir, append mode). Assembled together with device
@@ -14,7 +16,7 @@ import java.util.Locale
  *  verbatim. */
 object DebugLog {
     private const val MAX_BYTES = 512 * 1024L
-    private val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+    private val fmt get() = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
     private fun file(ctx: Context) = File(ctx.filesDir, "debug.log")
 
@@ -51,11 +53,12 @@ object DebugLog {
 
     /** Full report: device facts, memory, CPU features, ggml devices (if the
      *  native lib loads), model/voice inventory, our log, then logcat. */
-    fun buildReport(ctx: Context): String {
+    fun buildReport(ctx: Context, full: Boolean = false): String {
         val sb = StringBuilder()
         sb.appendLine("=== TTS Runner v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) debug report ${fmt.format(Date())} ===")
         sb.appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE}) android ${Build.VERSION.RELEASE} sdk ${Build.VERSION.SDK_INT}")
         sb.appendLine("soc: ${if (Build.VERSION.SDK_INT >= 31) Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL else "n/a"} abis: ${Build.SUPPORTED_ABIS.joinToString()}")
+        sb.appendLine("page size: ${android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)} bytes")
 
         val am = ctx.getSystemService(ActivityManager::class.java)
         val mi = ActivityManager.MemoryInfo()
@@ -76,7 +79,10 @@ object DebugLog {
             if (DeviceProbe.crashedBefore(ctx)) " (a previous probe crashed)" else "")
 
         sb.appendLine("--- models dir ---")
-        ModelManager.modelsDir(ctx).listFiles()?.forEach { sb.appendLine("${it.name} ${it.length()} bytes") }
+        val models = ModelManager.modelsDir(ctx)
+        if (full) models.walkTopDown().maxDepth(3).filter { it.isFile }.forEach {
+            sb.appendLine("${it.relativeTo(models)} ${it.length()} bytes")
+        } else models.listFiles()?.forEach { sb.appendLine("${it.name} ${it.length()} bytes") }
         sb.appendLine("--- voices ---")
         VoiceStore.list(ctx).forEach { sb.appendLine("${it.file.name} ${it.file.length()} bytes") }
         val prefs = ctx.getSharedPreferences("ttsrunner", Context.MODE_PRIVATE)
@@ -86,7 +92,7 @@ object DebugLog {
         // SIGKILLs leave no tombstone); rss at kill time is the key number
         sb.appendLine("--- recent process exits ---")
         try {
-            am.getHistoricalProcessExitReasons(ctx.packageName, 0, 6).forEach { e ->
+            if (Build.VERSION.SDK_INT >= 30) am.getHistoricalProcessExitReasons(ctx.packageName, 0, 6).forEach { e ->
                 sb.appendLine("${fmt.format(Date(e.timestamp))} ${e.processName.substringAfterLast(':', "ui")} " +
                     "reason=${e.reason} (${exitReasonName(e.reason)}) rss=${e.rss / 1024} MB status=${e.status}")
             }
@@ -95,18 +101,43 @@ object DebugLog {
         }
 
         // kept deliberately small so reports paste comfortably
-        sb.appendLine("--- app log (debug.log, tail) ---")
+        sb.appendLine(if (full) "--- app log (debug.log, retained) ---" else "--- app log (debug.log, tail) ---")
         try {
-            sb.appendLine(file(ctx).readText().lines().takeLast(60).joinToString("\n"))
+            val appLog = file(ctx).readText()
+            sb.appendLine(if (full) appLog else appLog.lines().takeLast(60).joinToString("\n"))
         } catch (e: Exception) {
             sb.appendLine("no app log: $e")
         }
 
         sb.appendLine("--- logcat (main, tail) ---")
-        sb.appendLine(logcat("main"))
-        sb.appendLine("--- last native crash (condensed) ---")
-        sb.appendLine(lastCrash())
+        sb.appendLine(if (full) logcatRaw("main") else logcat("main"))
+        sb.appendLine(if (full) "--- logcat (crash, tail) ---" else "--- last native crash (condensed) ---")
+        sb.appendLine(if (full) logcatRaw("crash") else lastCrash())
         return sb.toString()
+    }
+
+    /** Create a UTF-8 gzip report in the FileProvider share cache. Call off-main. */
+    fun exportGzip(ctx: Context): File {
+        val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
+        val now = Date()
+        // Keep recent attachments available to receiving apps after the chooser closes.
+        dir.listFiles()?.filter {
+            it.name.startsWith("logs_") && it.extension == "gz" &&
+                it.lastModified() < now.time - 7 * 24 * 60 * 60 * 1000L
+        }?.forEach { it.delete() }
+        val date = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss-SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(now)
+        val out = File(dir, "logs_$date.gz")
+        try {
+            GZIPOutputStream(out.outputStream()).bufferedWriter(Charsets.UTF_8).use {
+                it.write(buildReport(ctx, full = true))
+            }
+            return out
+        } catch (e: Exception) {
+            out.delete()
+            throw e
+        }
     }
 
     private fun logcat(buffer: String): String = try {
@@ -151,11 +182,12 @@ object DebugLog {
     }
 
     private fun logcatRaw(buffer: String): String = try {
-        val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time", "-b", buffer))
+        val p = ProcessBuilder("logcat", "-d", "-v", "threadtime", "-b", buffer, "-t", "4000")
+            .redirectErrorStream(true).start()
         val text = p.inputStream.bufferedReader().readText()
         p.waitFor()
         text
     } catch (e: Exception) {
-        ""
+        "logcat unavailable: $e"
     }
 }

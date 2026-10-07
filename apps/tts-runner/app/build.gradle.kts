@@ -22,7 +22,7 @@ android {
         versionName = findProperty("appVersionName") as String? ?: "0.0.0-dev"
 
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += (findProperty("androidAbis") as String? ?: "arm64-v8a").split(",")
         }
         externalNativeBuild {
             cmake {
@@ -47,6 +47,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            pickFirsts += "**/libc++_shared.so"
         }
     }
 
@@ -89,6 +90,7 @@ android {
 }
 
 dependencies {
+    implementation("org.pytorch:pytorch_android:2.1.0") // Kitten's S3 TorchScript decoder
     implementation("org.jsoup:jsoup:1.17.2") // article extraction for shared URLs
     implementation("net.dankito.readability4j:readability4j:1.0.8") // Mozilla Readability.js port
     implementation("androidx.appcompat:appcompat:1.7.0")

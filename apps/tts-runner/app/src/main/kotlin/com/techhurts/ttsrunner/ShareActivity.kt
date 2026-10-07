@@ -163,12 +163,7 @@ class ShareActivity : AppCompatActivity() {
     /** Every speaker with a model to voice it — Supertonic styles when a
      *  Supertonic model is installed, Qwen recordings when a Qwen one is. No
      *  global model gates this; the voice picked decides the engine. */
-    private fun voiceList(): List<VoiceStore.Voice> = buildList {
-        if (ModelManager.modelForEngine(this@ShareActivity, "supertonic") != null)
-            addAll(VoiceStore.styleList(this@ShareActivity))
-        if (ModelManager.modelForEngine(this@ShareActivity, "qwen") != null)
-            addAll(VoiceStore.list(this@ShareActivity))
-    }
+    private fun voiceList(): List<VoiceStore.Voice> = VoiceStore.available(this)
 
     private fun populateVoices() {
         val list = voiceList()
@@ -202,7 +197,7 @@ class ShareActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, voice.name)
                 .putExtra(TtsService.EXTRA_ENGINE,
-                    if (voice.file.extension.equals("json", true)) "supertonic" else "qwen")
+                    VoiceStore.engineOf(this, voice.name))
                 .putExtra(TtsService.EXTRA_BACKEND,
                     Backends.current(this, VoiceStore.engineOf(this, voice.name)))
                 .putExtra(TtsService.EXTRA_SAVE, save))

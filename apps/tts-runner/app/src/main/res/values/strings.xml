@@ -2,4 +2,7 @@
 <resources>
     <string name="app_name">TTS Runner</string>
     <string name="share_label">Read aloud (TTS Runner)</string>
+    <string name="share_logs">Share logs_date.gz</string>
+    <string name="preparing_logs">Preparing logs…</string>
+    <string name="share_logs_failed">Could not share logs: %1$s</string>
 </resources>

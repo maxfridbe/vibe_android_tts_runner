@@ -6,7 +6,7 @@
 # native layer needs: NDK + CMake, llama.cpp sources pre-fetched to
 # /opt/llama_cpp, Vulkan/SPIRV headers patched into the NDK sysroot,
 # and a LunarG glslc new enough for ggml's Vulkan feature probes.
-FROM gradle:8.7.0-jdk17
+FROM docker.io/library/gradle:8.7.0-jdk17
 
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
 ENV ANDROID_HOME=/opt/android-sdk
@@ -39,8 +39,10 @@ RUN sdkmanager \
 # llama.cpp sources, pinned. Qwen3-TTS support landed 2026-08-04 (PR #26254);
 # this pin is the same commit validated against the desktop CUDA build on
 # Bump LLAMA_CPP_COMMIT to pick up upstream Vulkan/CPU fixes.
-ARG LLAMA_CPP_COMMIT="f9e832c10e9444cb168ddcb579cc62c154f3068b"
-RUN wget -q "https://github.com/ggml-org/llama.cpp/archive/${LLAMA_CPP_COMMIT}.tar.gz" -O /tmp/llama.tar.gz && \
+# Kitten's fork adds lossless TQ2_1 weights. The Qwen patches below also
+# apply to this revision, so both engines share one GGML runtime.
+ARG LLAMA_CPP_COMMIT="1ce0bb504e5452795b52ca9a3c3950e982d82bb1"
+RUN wget -q "https://github.com/KittenML/kitten-tts-2-cpp/archive/${LLAMA_CPP_COMMIT}.tar.gz" -O /tmp/llama.tar.gz && \
     mkdir -p /opt/llama_cpp && \
     tar xzf /tmp/llama.tar.gz -C /opt/llama_cpp --strip-components=1 && \
     rm /tmp/llama.tar.gz

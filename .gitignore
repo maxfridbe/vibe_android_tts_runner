@@ -17,3 +17,6 @@ keystore/
 
 # Python bytecode from the tooling scripts
 __pycache__/
+
+# Exported device diagnostics stay local.
+screenshots/logs_*.gz

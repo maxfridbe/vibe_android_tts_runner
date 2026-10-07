@@ -1,0 +1,8 @@
+Kitten TTS 2
+This Stellon Labs Model is licensed under the Stellon Labs Community License, Copyright © Stellon Labs Inc. All Rights Reserved
+Powered by Stellon Labs
+
+Model weights are downloaded unchanged from KittenML/kitten-tts-2.
+The Android adapter uses the upstream Kitten C++ prompt and sampling routines.
+Kitten's English grammar normalizer is not used; input text is whitespace-normalized.
+See kitten-tts-2.txt, kitten-runtime.txt and llama-cpp.txt for license terms.

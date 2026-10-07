@@ -156,16 +156,12 @@ class HttpServer(private val ctx: Context, val port: Int) {
                 val data = JSONArray()
                 // every voice whose engine has a model, each tagged with its own
                 // kind/speed — the client no longer depends on a global model
-                val voices = buildList {
-                    if (ModelManager.modelForEngine(ctx, "supertonic") != null)
-                        addAll(VoiceStore.styleList(ctx))
-                    if (ModelManager.modelForEngine(ctx, "qwen") != null)
-                        addAll(VoiceStore.list(ctx))
-                }
+                val voices = VoiceStore.available(ctx)
                 voices.forEach {
                     val style = VoiceStore.isStyle(ctx, it.name)
                     data.put(JSONObject().put("id", it.name).put("name", it.name)
-                        .put("kind", if (style) "style" else "reference")
+                        .put("engine", VoiceStore.engineOf(ctx, it.name))
+                        .put("kind", if (VoiceStore.engineOf(ctx, it.name) == "kitten") "preset" else if (style) "style" else "reference")
                         .put("icon", VoiceStore.icon(ctx, it.name))
                         .put("fast", style))
                 }
@@ -188,12 +184,7 @@ class HttpServer(private val ctx: Context, val port: Int) {
         if (text.length > 8000) return error(out, 400, "input is longer than 8000 characters")
 
         // any voice with a model to run it; the voice decides the engine
-        val known = buildList {
-            if (ModelManager.modelForEngine(ctx, "supertonic") != null)
-                addAll(VoiceStore.styleList(ctx).map { it.name })
-            if (ModelManager.modelForEngine(ctx, "qwen") != null)
-                addAll(VoiceStore.list(ctx).map { it.name })
-        }
+        val known = VoiceStore.available(ctx).map { it.name }
         val wanted = body.optString("voice").trim()
         val voice = known.firstOrNull { it.equals(wanted, true) }
             ?: VoiceStore.defaultVoice(ctx)?.name?.takeIf { it in known }

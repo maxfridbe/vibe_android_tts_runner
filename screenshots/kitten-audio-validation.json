@@ -1,0 +1,11 @@
+{
+  "sample_rate_hz": 24000,
+  "channels": 1,
+  "sample_width_bytes": 2,
+  "frames": 72000,
+  "duration_seconds": 3.0,
+  "peak": 32439,
+  "rms": 5602.9125882114995,
+  "apk": "output/tts-runner/tts-runner-26.1007.1545-debug.apk",
+  "apk_sha256": "274ad0fe543540f6fe4f13abff4e4d7964e57ece6a50edb424065866bd024a03"
+}
