@@ -451,7 +451,6 @@ class TtsService : Service() {
         // and let the reference-audio check below apply only to Qwen.
         val supertonicJob = model.engine == "supertonic"
         val kittenJob = model.engine == "kitten"
-        if (kittenJob && backend != "cpu") { fail("Kitten TTS 2 requires CPU"); return }
         if (kittenJob && VoiceStore.kittenList(this).none { it.name == voiceName }) {
             fail("Unknown Kitten voice: $voiceName"); return
         }
@@ -477,7 +476,7 @@ class TtsService : Service() {
         // keeps its id, which is what makes its cached chunks findable.
         val ephemeral = preview || design   // previews/design rolls stay out of job history
         val jobId = if (resumeId != 0L) resumeId else System.currentTimeMillis()
-        val chunks = Chunker.split(text)
+        val chunks = if (kittenJob) SpeechMarkup.kittenChunks(text) else Chunker.split(text)
         DebugLog.log(this, "TtsService", "chunked into ${chunks.size}: ${chunks.map { it.length }}")
         if (!ephemeral) {
             if (resumeId != 0L) JobStore.update(this, jobId) {
@@ -488,8 +487,11 @@ class TtsService : Service() {
                 chunksTotal = chunks.size))
         }
         fun abort(reason: String) {
-            persistJobResult(ephemeral, jobId, false, reason, 0, 0.0, 0, "", "")
-            fail(reason)
+            // Canceling first-use GPU preparation or model loading is a stop,
+            // not a broken model. Keep the job resumable without an error.
+            val stopped = stopRequested
+            persistJobResult(ephemeral, jobId, stopped, if (stopped) null else reason, 0, 0.0, 0, "", "")
+            if (stopped) broadcast("stopped", 0, 0, "") else fail(reason)
         }
         if (chunks.isEmpty()) { abort("Nothing to speak"); return }
 
@@ -890,7 +892,10 @@ class TtsService : Service() {
     }
 
     private fun generateKitten(text: String, voice: String, seed: Int): ByteArray? = try {
-        checkNotNull(kitten) { "Kitten is not loaded" }.generate(text, voice, seed)
+        val eng = checkNotNull(kitten) { "Kitten is not loaded" }
+        eng.generate(text, voice, seed).also {
+            DebugLog.log(this, "Kitten", "${loadedKey}: tokens=${eng.tokenMs} ms, CPU decoder=${eng.decoderMs} ms, pcm=${it.size} bytes")
+        }
     } catch (t: Throwable) {
         kittenError = t.message ?: t.javaClass.simpleName
         DebugLog.log(this, "Kitten", "Generation failed", t)
@@ -906,10 +911,14 @@ class TtsService : Service() {
         if (model.engine == "kitten") {
             TtsEngine.nUnload()
             supertonic?.close(); supertonic = null
-            broadcast("loading", 0, 0, model.label)
+            broadcast("loading", 0, 0, if (backend == "cpu") model.label else
+                "Kitten $backend: preparing/loading GPU model (first use needs about 1.5 GB extra storage)")
             return try {
-                val eng = KittenEngine().also { kitten = it }
-                eng.load(ModelManager.kittenDir(this), bigCoreCount())
+                val eng = KittenEngine()
+                eng.resetCancel()
+                kitten = eng
+                if (stopRequested) eng.cancel()
+                eng.load(ModelManager.kittenDir(this), bigCoreCount(), backend)
                 kittenError = ""
                 loadedKey = key
                 true

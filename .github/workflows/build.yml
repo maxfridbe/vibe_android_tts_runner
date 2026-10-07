@@ -77,7 +77,7 @@ jobs:
         run: |
           docker image inspect androidbase-builder >/dev/null 2>&1 || echo "::warning::builder image not in docker daemon"
           set -o pipefail
-          if ! CONTAINER_ENGINE=docker SKIP_IMAGE_BUILD=1 BUILD_TASK="assembleDebug assembleRelease" ./build.sh "${{ matrix.app }}" 2>&1 | tee /tmp/build.log; then
+          if ! CONTAINER_ENGINE=docker SKIP_IMAGE_BUILD=1 BUILD_TASK="assembleDebug assembleRelease testDebugUnitTest lintDebug" ./build.sh "${{ matrix.app }}" 2>&1 | tee /tmp/build.log; then
             # Surface the tail of the log as annotations (visible via API)
             tail -n 10 /tmp/build.log | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1

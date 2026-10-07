@@ -62,6 +62,7 @@ class TalkActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var totals: TextView
     private lateinit var voiceSpinner: Spinner
+    private lateinit var speechControls: SpeechControls
     private var voice: String? = null
     private val queue = ArrayDeque<Line>()
     @Volatile private var busy: Line? = null
@@ -184,32 +185,6 @@ class TalkActivity : AppCompatActivity() {
         col.addView(list, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Supertonic reads bracketed expression tags inline, so a row of one-tap
-        // inserts sits right above the keyboard where they are actually used.
-        val tags = android.widget.HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val tagRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for ((label, tag) in EXPRESSIONS) {
-            tagRow.addView(Button(this).apply {
-                text = label
-                textSize = 12f
-                minWidth = 0; minimumWidth = 0
-                setPadding(dp(12), 0, dp(12), 0)
-                setOnClickListener { insertTag(tag) }
-                // repeats stack: measured +0.2 s for one <laugh> and +0.9 s for
-                // three, so a long press is the "really laugh" gesture
-                setOnLongClickListener { insertTag(tag.repeat(3)); true }
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)
-                ).apply { marginEnd = dp(6) }
-            })
-        }
-        tags.addView(tagRow)
-        col.addView(tags)
-        col.addView(TextView(this).apply {
-            text = "a tag adds about a fifth of a second — hold one for a long version"
-            textSize = 11f; alpha = 0.6f; setPadding(0, dp(2), 0, dp(2))
-        })
-
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
@@ -226,6 +201,8 @@ class TalkActivity : AppCompatActivity() {
             text = Icons.label(context, Icons.VOLUME, "Say")
             setOnClickListener { say() }
         })
+        speechControls = SpeechControls(this, input)
+        col.addView(speechControls)
         col.addView(row)
 
         setContentView(col)
@@ -264,9 +241,11 @@ class TalkActivity : AppCompatActivity() {
         val labels = names.map { VoiceStore.label(this, it, fast) }
         voiceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         voiceSpinner.setSelection(names.indexOf(voice).coerceAtLeast(0))
+        speechControls.setEngine(voice?.let { VoiceStore.engineOf(this, it) } ?: "")
         voiceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 voice = names.getOrNull(pos)
+                speechControls.setEngine(voice?.let { VoiceStore.engineOf(this@TalkActivity, it) } ?: "")
                 voice?.let {
                     VoiceStore.setDefaultFor(this@TalkActivity, VoiceStore.Voice(it, File("")), fast)
                 }
@@ -283,17 +262,6 @@ class TalkActivity : AppCompatActivity() {
     override fun onDestroy() {
         stopPlayback()
         super.onDestroy()
-    }
-
-    /** Drops a tag at the cursor (or over the selection) and keeps focus in the
-     *  field, so tapping one never costs the keyboard or the caret position. */
-    private fun insertTag(tag: String) {
-        val start = input.selectionStart.coerceAtLeast(0)
-        val end = input.selectionEnd.coerceAtLeast(0)
-        val text = input.text
-        val pad = if (start > 0 && text.getOrNull(start - 1)?.isWhitespace() == false) " $tag" else tag
-        text.replace(minOf(start, end), maxOf(start, end), "$pad ")
-        input.requestFocus()
     }
 
     private fun say() {
@@ -733,26 +701,5 @@ class TalkActivity : AppCompatActivity() {
         const val EXTRA_CHAT_ID = "chat_id"
         private const val REQ_SAVE_TEXT = 21
 
-        /** Supertonic 3's expression tags. The model card says ten exist but
-         *  does not list them, so they were found by probe: synthesise
-         *  "I see. <x> Well then." and transcribe it — a real tag is consumed
-         *  as a vocalisation, anything else is read out as a word
-         *  (`<chuckle>` and `<gasp>` are spoken, so they are not tags).
-         *  `<laughter>` and `<breathe>` are accepted spellings of two of them.
-         *  One tag adds ~0.2 s; repeats stack (three `<laugh>` ran +0.9 s). */
-        private val EXPRESSIONS = listOf(
-            "😄 laugh" to "<laugh>",
-            "😔 sigh" to "<sigh>",
-            "😮‍💨 breath" to "<breath>",
-            "😢 cry" to "<cry>",
-            "🥱 yawn" to "<yawn>",
-            "🤧 cough" to "<cough>",
-            "🤔 hmm" to "<hmm>",
-            "😐 um" to "<um>",
-            "😒 tsk" to "<tsk>",
-            "😘 kiss" to "<kiss>",
-            "… pause" to "...",
-            "— dash" to " —",
-        )
     }
 }

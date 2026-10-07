@@ -28,7 +28,11 @@ object Backends {
     )
 
     fun options(engine: String): List<Option> = when (engine) {
-        "kitten" -> listOf(Option("cpu", "CPU", "Kitten's TQ2_1 weights and S3 decoder run on CPU"))
+        "kitten" -> listOf(
+            Option("cpu", "CPU", "compact model; no extra storage"),
+            Option("opencl", "GPU · OpenCL (experimental)", "Adreno speech-token generation; decoder stays on CPU"),
+            Option("vulkan", "GPU · Vulkan (experimental)", "speech-token generation; decoder stays on CPU"),
+        )
         "supertonic" -> ONNX
         else -> LLAMA
     }
@@ -61,7 +65,7 @@ object Backends {
     /** @param info output of TtsEngine.nDeviceInfo()
      *  @return the option id to star, and why it is starred */
     fun recommend(engine: String, info: String, gpuCapable: Boolean): Pair<String, String> {
-        if (engine == "kitten") return "cpu" to "Kitten TTS 2 supports CPU inference"
+        if (engine == "kitten") return "cpu" to "CPU is validated; GPU performance still needs phone testing"
         val adrenoCl = info.contains("OpenCL") && info.contains("Adreno")
         val vulkanLine = info.lines().find { it.contains("Vulkan") } ?: ""
         val vulkanNonAdreno = vulkanLine.isNotEmpty() && !vulkanLine.contains("Adreno")

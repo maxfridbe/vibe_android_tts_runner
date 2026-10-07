@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var jobText: EditText
     private lateinit var stopBtn: Button
     private lateinit var voicePickBtn: Button
+    private lateinit var speechControls: SpeechControls
     private var pickedVoice: String? = null
     private var pickedSave = false
 
@@ -422,27 +423,8 @@ class MainActivity : AppCompatActivity() {
             modeGroup.setOnCheckedChangeListener { _, id -> pickedSave = id == R.id.mode_save }
             addView(modeGroup)
 
-            // Speech speed. Supertonic's duration predictor divides by a pace
-            // factor whose published default is 1.05; the slider multiplies
-            // that, so 1.0× here is the voice's natural pace. Persisted:
-            // it applies to every job and live session until changed.
-            val speedLabel = TextView(context)
-            fun showSpeed(pct: Int) { speedLabel.text = "Speech speed ${"%.2f".format(pct / 100f)}×" }
-            addView(speedLabel)
-            addView(android.widget.SeekBar(context).apply {
-                max = 20                      // 0.60× .. 1.60× in 0.05 steps
-                progress = (prefs().getInt("speech_speed_pct", 100) - 60) / 5
-                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-                    override fun onProgressChanged(s: android.widget.SeekBar?, v: Int, fromUser: Boolean) {
-                        val pct = 60 + v * 5
-                        prefs().edit().putInt("speech_speed_pct", pct).apply()
-                        showSpeed(pct)
-                    }
-                    override fun onStartTrackingTouch(s: android.widget.SeekBar?) {}
-                    override fun onStopTrackingTouch(s: android.widget.SeekBar?) {}
-                })
-            })
-            showSpeed(prefs().getInt("speech_speed_pct", 100))
+            speechControls = SpeechControls(context, jobText)
+            addView(speechControls)
 
             val actions = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
             // live mode lives on the Speakers tab now: you start it as a
@@ -508,6 +490,7 @@ class MainActivity : AppCompatActivity() {
         val name = pickedVoice?.takeIf { it in voicesForCurrentModel() }
             ?: VoiceStore.defaultVoice(this)?.name
             ?: voicesForCurrentModel().firstOrNull()
+        if (::speechControls.isInitialized) speechControls.setEngine(name?.let { VoiceStore.engineOf(this, it) } ?: "")
         voicePickBtn.text = Icons.label(this, Icons.MIC,
             if (name == null) "Voice: none ▾" else "${VoiceStore.label(this, name)} ▾")
     }
@@ -558,7 +541,7 @@ class MainActivity : AppCompatActivity() {
                 .putExtra(TtsService.EXTRA_TITLE, title)
                 .putExtra(TtsService.EXTRA_VOICE, voice)
                 .putExtra(TtsService.EXTRA_ENGINE, "kitten")
-                .putExtra(TtsService.EXTRA_BACKEND, "cpu")
+                .putExtra(TtsService.EXTRA_BACKEND, Backends.current(this, "kitten"))
                 .putExtra(TtsService.EXTRA_SAVE, save))
             ui.postDelayed({ refreshJobsIfChanged() }, 500)
             return true
@@ -980,7 +963,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (engine == "kitten") group("Kitten TTS 2 speakers",
-                "Built-in presets · on-device CPU · 24 kHz", VoiceStore.kittenList(this).size) {
+                "Built-in presets · on-device · 24 kHz", VoiceStore.kittenList(this).size) {
             val presets = VoiceStore.kittenList(this@MainActivity)
             if (presets.isEmpty()) addView(TextView(context).apply {
                 text = "Download Kitten TTS 2 in Settings to use its preset voices."
@@ -2208,7 +2191,7 @@ class MainActivity : AppCompatActivity() {
 
         col.caption("Kitten TTS 2 · Powered by Stellon Labs. " +
             "Stellon Labs Community License: https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md. " +
-            "Kitten uses CPU and built-in voices; on-device voice cloning is not available.")
+            "Kitten has built-in voices; on-device voice cloning is not available.")
         col.addView(Button(this).apply {
             text = "Kitten licenses and attribution"
             setOnClickListener {
@@ -2221,20 +2204,30 @@ class MainActivity : AppCompatActivity() {
 
         // one backend card per engine that has a model, so the compute choice
         // is set per engine without any global "current model"
-        for (engine in listOf("llama", "supertonic")) {
-            val voiceEngine = if (engine == "supertonic") "supertonic" else "qwen"
+        for (engine in listOf("kitten", "llama", "supertonic")) {
+            val voiceEngine = if (engine == "llama") "qwen" else engine
             if (ModelManager.downloadedForEngine(this, voiceEngine).isEmpty()) continue
-            val label = if (engine == "supertonic") "Supertonic (ONNX)" else "Qwen (llama.cpp)"
+            val label = when (engine) {
+                "kitten" -> "Kitten TTS 2"
+                "supertonic" -> "Supertonic (ONNX)"
+                else -> "Qwen (llama.cpp)"
+            }
         col.addView(card {
             addView(TextView(context).apply {
                 text = "Compute · $label"
                 textSize = 17f; setTypeface(typeface, Typeface.BOLD)
+            })
+            if (engine == "kitten") addView(TextView(context).apply {
+                text = "GPU mode creates a lossless Q4_0 copy on first use: about 1.45 GB extra storage. " +
+                    "The audio decoder stays on CPU. OpenCL requires an Adreno driver; Vulkan support varies by phone."
+                textSize = 12f
             })
             val options = Backends.options(engine)
             val backendGroup = RadioGroup(context)
             val buttons = options.mapIndexed { i, o ->
                 RadioButton(context).apply {
                     text = "${o.label} — ${o.why}"
+                    contentDescription = "Backend $engine ${o.id}"
                     id = 100 + i
                 }.also { backendGroup.addView(it) }
             }

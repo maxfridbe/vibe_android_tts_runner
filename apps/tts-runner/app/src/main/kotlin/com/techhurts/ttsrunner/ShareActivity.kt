@@ -30,6 +30,7 @@ class ShareActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var editor: EditText
     private lateinit var voices: RadioGroup
+    private lateinit var speechControls: SpeechControls
     private lateinit var speakBtn: Button
     private lateinit var saveBtn: Button
     private lateinit var liveBtn: Button
@@ -77,6 +78,9 @@ class ShareActivity : AppCompatActivity() {
         voices = RadioGroup(this)
         root.addView(ScrollView(this).apply { addView(voices) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 2f))
+
+        speechControls = SpeechControls(this, editor)
+        root.addView(speechControls)
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply {
@@ -182,6 +186,13 @@ class ShareActivity : AppCompatActivity() {
             })
         }
         if (voices.checkedRadioButtonId == -1) voices.check(0)
+        fun updateControls() {
+            speechControls.setEngine(list.getOrNull(voices.checkedRadioButtonId)?.let {
+                VoiceStore.engineOf(this, it.name)
+            } ?: "")
+        }
+        voices.setOnCheckedChangeListener { _, _ -> updateControls() }
+        updateControls()
     }
 
     private fun speak(save: Boolean, live: Boolean) {

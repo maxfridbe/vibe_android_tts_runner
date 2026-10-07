@@ -13,7 +13,7 @@ cloned voice, entirely on-device: no server, no account, no audio leaving the
 phone. Three engines ship side by side — [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
 Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
 (99M ONNX, faster than real time, style voices), plus
-[Kitten TTS 2](https://huggingface.co/KittenML/kitten-tts-2) (CPU, built-in voices,
+[Kitten TTS 2](https://huggingface.co/KittenML/kitten-tts-2) (CPU or experimental GPU, built-in voices,
 24 kHz). Kitten TTS 2: **Powered by Stellon Labs**.
 
 - **Speakers** — a tab per engine: Supertonic (style files), Qwen
@@ -41,7 +41,7 @@ Qwen3-TTS (12 Hz codec, cloning from a 10–20 s reference) and Supertonic 3
   killed engine (same backend, never a silent switch) as long as each attempt
   makes progress, so a long job survives any number of kills unattended.
 - **Backends** — per engine, and per phone: CPU / OpenCL / Vulkan for the Qwen
-  models, CPU / NNAPI / XNNPACK for Supertonic, CPU for Kitten. The app stars the one measured
+  models, CPU / NNAPI / XNNPACK for Supertonic, CPU / OpenCL / Vulkan for Kitten. The app stars the one measured
   fastest for the detected GPU, says why, and never switches behind your back.
 - **Backup folder** — point it at a real folder and every speaker is mirrored
   there, and anything the folder has that the phone lacks is imported. A
@@ -95,13 +95,40 @@ matching voice conditioning, and config. Downloads resume, validate exact file
 sizes, and publish the voice index only after all files are complete.
 The native fork is pinned to `1ce0bb504e5452795b52ca9a3c3950e982d82bb1`.
 
-Kitten supports CPU only. Its preset voices and expression conditioning are
-available; direct recording-based cloning and the upstream English grammar
+Kitten defaults to CPU. **Settings → Compute · Kitten TTS 2** also offers
+experimental OpenCL (Adreno) and Vulkan for the speech language model. The
+waveform decoder stays on CPU. The first GPU job streams a lossless conversion
+of the existing TQ2_1 weights into standard Q4_0, taking another **1.447 GB** of
+storage (about **2.8 GB** total). Later GPU jobs reuse that file. Interrupted
+conversions are repaired; unsupported devices report an error without silently
+switching to CPU. CPU remains the recommended default until phone benchmarks
+establish whether GPU helps. No GPU speedup on physical Android hardware has
+been measured for this integration yet.
+
+Preset voices and expression conditioning are available; direct
+recording-based cloning and the upstream English grammar
 normalizer are not included. Spell out ambiguous numbers and abbreviations.
 The existing speed slider applies only to Supertonic. The decoder uses PyTorch
 Android 2.1.0; its bundled native decoder has 4 KB ELF alignment, so this is
 not a 16 KB-ready release build. The sampling seed controls the speech tokens;
 decoder noise is not seeded by the Android Java API.
+
+Jobs, Chats, and the shared-text editor show **Delivery** controls for the
+selected engine. Kitten offers ten leading emotions, ten inline vocal events,
+and `(((emphasis)))` around selected words or an entered phrase. Recognized
+markup enables its expressive sampling automatically. A leading emotion is
+carried into every chunk of a long job; supported emphasis spans stay intact.
+Supertonic offers its ten vocal-event tags and the 0.6×–1.6× speed slider.
+The menus insert visible text so it can be edited, copied, and saved with a job.
+Kitten controls are beta: delivery varies by voice and sentence.
+
+On-device Kitten cloning would additionally need the 512-dimensional speaker
+encoder and trained projection, S3 tokenizer, decoder speaker encoder, matching
+audio preprocessing, and a recording/transcript workflow. The upstream weight
+payloads for those components total about **540 MB before mobile export**.
+That is an estimate, not an available Android download. Supplying the transcript
+avoids an extra speech-recognition model. Voice preparation happens once per
+saved voice; subsequent synthesis reuses the conditioning data.
 
 The weights have their own [Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/main/LICENSE.md).
 The complete license and attribution ship in the APK and are readable from
@@ -131,6 +158,41 @@ selects Bruno, saves speech, checks job metadata, and pulls a 24 kHz WAV into
 that another job completes without restarting the engine. All three capture
 screenshots. A failed or empty synthesis fails the test. Run `check` in place
 of `run` to validate scripts without a device.
+
+`tooling/kitten-controls.ts` is specifically for the x86_64 emulator build,
+whose GPU backends are not compiled in: it verifies that selecting OpenCL
+produces an explicit error, then switches to CPU and synthesizes text composed
+through the emotion/event/emphasis UI. Physical GPU testing must inspect the
+shared logs for the selected device, offloaded layers, and separate speech-token
+and CPU-decoder timings.
+
+`tooling/speech-controls.ts` downloads Supertonic, switches the model-specific
+controls, synthesizes an event-tagged line, and checks Jobs, Chats, and Share.
+`tooling/speech-speed.ts` changes speed in Share and checks that Jobs refreshes
+the shared setting when it regains focus.
+
+Follow-up emulator checks on 2026-10-07 (APKs `26.1007.1649`–`26.1007.1705`):
+
+- Kitten: unavailable OpenCL reported explicitly; CPU recovery generated
+  `[joyful] Hello, my friend. <laugh> (((Welcome)))` (4.0 s audio, 29.97 s generation).
+- Supertonic M1: UI-inserted `<breath>` produced 2.375 s audio in 0.908 s generation.
+- Both engines' composition menus were checked in Jobs, Chats, and Share;
+  changing Supertonic speed in Share refreshed the existing Jobs slider.
+- Final APK `26.1007.1705`: cancel during model loading left a stopped job
+  without an error; a subsequent job completed without restarting the app
+  (3.28 s audio, 27.13 s generation). ARM64/x86_64 debug and release builds,
+  all five unit tests, release signature verification, and lint passed
+  (0 errors, 166 warnings).
+- Initial runs hit emulator graphics-fence and System UI ANRs; the affected
+  flows passed on retry. These are emulator functional checks, not phone
+  performance or GPU benchmarks.
+
+`tooling/test-kitten-repack.cpp` checks every weight against GGML's independent
+dequantizers, non-ternary tensor preservation, invalid codes, cancellation,
+cache reuse and repair. It was run against the pinned 1.03 GB source GGUF:
+all 310 tensors and 1,409,286,144 converted weights matched bit-for-bit. Its
+output GGUF is scratch space: the cache-repair test truncates and rebuilds that
+output. `testDebugUnitTest` covers expression recognition and chunking.
 
 Validated on 2026-10-07 with android_screen_runner commit `15cce01`, an Android
 34 x86_64 emulator (6 GB RAM), and APK `26.1007.1545`:

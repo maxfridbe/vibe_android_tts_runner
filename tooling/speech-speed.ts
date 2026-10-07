@@ -1,0 +1,23 @@
+// Supertonic must be downloaded. A speed changed in Share must refresh Jobs.
+device.start();
+device.install(files.latest("output/tts-runner/tts-runner-*-debug.apk"));
+device.apps.stop("com.techhurts.ttsrunner");
+device.launch("com.techhurts.ttsrunner/.MainActivity");
+device.getButton({ desc: "Choose speaker" }).click();
+device.getButton({ contains: "M1" }).click();
+const slider = device.getElement({ desc: "Supertonic speech speed" });
+slider.scrollIntoView();
+let b = slider.dumpState().bounds;
+device.tap(b.left + (b.right - b.left) * 0.25, (b.top + b.bottom) / 2);
+device.shell("am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT 'Speed setting check.' -n com.techhurts.ttsrunner/.ShareActivity");
+device.getButton({ contains: "M1" }).click();
+b = slider.dumpState().bounds;
+device.tap(b.left + (b.right - b.left) * 0.75, (b.top + b.bottom) / 2);
+const xml = device.shell("run-as com.techhurts.ttsrunner cat shared_prefs/ttsrunner.xml");
+const match = xml.match(/name="speech_speed_pct" value="(\d+)"/);
+if (!match) throw new Error("Speed preference was not saved");
+const label = "Speech speed " + (Number(match[1]) / 100).toFixed(2) + "×";
+expect(device.getLabel({ contains: "Speech speed" })).toHaveText(label);
+device.keys.back();
+expect(device.getLabel({ contains: "Speech speed" })).toHaveText(label);
+log("Shared speed refreshed in Jobs: " + label);

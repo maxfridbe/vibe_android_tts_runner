@@ -1,5 +1,8 @@
 #include <jni.h>
 #include "llama.h"
+#include "ggml-backend.h"
+#include "kitten_repack.h"
+#include <android/log.h>
 #include "tools/kitten-tts/sampling.h"
 #include <atomic>
 #include <fstream>
@@ -12,6 +15,7 @@ struct Engine {
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model{nullptr, llama_model_free};
     json config;
     int threads;
+    bool gpu = false;
 };
 std::unique_ptr<Engine> engine;
 std::atomic<bool> canceled{false};
@@ -44,7 +48,7 @@ std::vector<int> tokenize(const llama_vocab * vocab, const std::string & text) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_techhurts_ttsrunner_KittenNative_load(JNIEnv * env, jobject, jbyteArray path,
-        jbyteArray config, jint threads) try {
+        jbyteArray config, jint threads, jbyteArray backend) try {
     engine.reset();
     auto next = std::make_unique<Engine>();
     next->config = json::parse(utf8(env, config));
@@ -52,11 +56,30 @@ Java_com_techhurts_ttsrunner_KittenNative_load(JNIEnv * env, jobject, jbyteArray
     next->threads = std::max(1, int(threads));
     llama_backend_init();
     auto mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
-    ggml_backend_dev_t no_offload[] = {nullptr};
-    mp.devices = no_offload;
+    const auto requested = utf8(env, backend);
+    if (requested != "cpu" && requested != "opencl" && requested != "vulkan")
+        throw std::runtime_error("Unknown Kitten backend: " + requested);
+    next->gpu = requested != "cpu";
+    ggml_backend_dev_t selected[] = {nullptr, nullptr};
+    auto model_path = utf8(env, path);
+    if (next->gpu) {
+        ggml_backend_load_all();
+        const char * name = requested == "vulkan" ? "Vulkan" : "OpenCL";
+        const auto reg = ggml_backend_reg_by_name(name);
+        if (reg && ggml_backend_reg_dev_count(reg)) selected[0] = ggml_backend_reg_dev_get(reg, 0);
+        if (!selected[0]) throw std::runtime_error("No " + requested + " device available for Kitten; select CPU in Settings");
+        __android_log_print(ANDROID_LOG_INFO, "Kitten", "GPU selected: %s (%s); waveform decoder stays on CPU",
+            ggml_backend_dev_name(selected[0]), ggml_backend_dev_description(selected[0]));
+        const auto gpu_path = model_path.substr(0, model_path.find_last_of('/')) + "/model-q4_0-v1.gguf";
+        __android_log_print(ANDROID_LOG_INFO, "Kitten", "Preparing/reusing lossless Q4_0 GPU model: %s", gpu_path.c_str());
+        kitten_android::prepare_gpu_model(model_path, gpu_path, canceled);
+        model_path = gpu_path;
+    }
+    mp.n_gpu_layers = next->gpu ? 999 : 0;
+    mp.devices = selected;
     mp.use_extra_bufts = false;
-    next->model.reset(llama_model_load_from_file(utf8(env, path).c_str(), mp));
+    mp.progress_callback = [](float, void *) { return !canceled.load(); };
+    next->model.reset(llama_model_load_from_file(model_path.c_str(), mp));
     if (!next->model) throw std::runtime_error("Cannot load Kitten language model");
     engine = std::move(next);
 } catch (const std::exception & e) { error(env, e); }
@@ -93,6 +116,8 @@ Java_com_techhurts_ttsrunner_KittenNative_generate(JNIEnv * env, jobject, jbyteA
     auto cp = llama_context_default_params();
     cp.n_ctx = ids.size() + budget; cp.n_batch = 256; cp.n_ubatch = 256;
     cp.n_threads = engine->threads; cp.n_threads_batch = engine->threads;
+    cp.offload_kqv = engine->gpu;
+    cp.op_offload = engine->gpu;
     cp.abort_callback = [](void *) { return canceled.load(); };
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
         llama_init_from_model(engine->model.get(), cp), llama_free);

@@ -5,4 +5,16 @@
     <string name="share_logs">Share logs_date.gz</string>
     <string name="preparing_logs">Preparing logs…</string>
     <string name="share_logs_failed">Could not share logs: %1$s</string>
+    <string name="delivery_for_engine">Delivery · %1$s</string>
+    <string name="delivery_emotion">Emotion</string>
+    <string name="delivery_neutral">No emotion tag</string>
+    <string name="delivery_event">Vocal event</string>
+    <string name="delivery_emphasis">Emphasize</string>
+    <string name="delivery_phrase">Word or short phrase</string>
+    <string name="delivery_insert">Insert</string>
+    <string name="delivery_phrase_invalid">Use 1–80 characters without parentheses or line breaks.</string>
+    <string name="delivery_kitten_help">Emotion sets the delivery; events go at the cursor. Select words to emphasize them. Expression effects vary by voice.</string>
+    <string name="delivery_supertonic_help">Insert a vocal event at the cursor. Speed applies to all Supertonic voices.</string>
+    <string name="delivery_speed">Speech speed %1$.2f×</string>
+    <string name="delivery_speed_control">Supertonic speech speed</string>
 </resources>

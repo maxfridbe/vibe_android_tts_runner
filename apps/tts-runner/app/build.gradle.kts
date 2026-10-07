@@ -10,6 +10,8 @@ val sharedKeystore = findProperty("appKeystoreFile") as String?
 android {
     namespace = "com.techhurts.ttsrunner"
     compileSdk = 35
+    // Match the builder image; avoid fetching AGP's default 34 on every build.
+    buildToolsVersion = "35.0.0"
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
@@ -90,6 +92,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("org.pytorch:pytorch_android:2.1.0") // Kitten's S3 TorchScript decoder
     implementation("org.jsoup:jsoup:1.17.2") // article extraction for shared URLs
     implementation("net.dankito.readability4j:readability4j:1.0.8") // Mozilla Readability.js port

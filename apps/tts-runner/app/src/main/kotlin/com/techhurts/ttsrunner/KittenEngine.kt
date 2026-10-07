@@ -10,20 +10,23 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Kitten TTS 2: CPU GGML speech tokens followed by the published S3 decoder. */
+/** Kitten TTS 2: CPU/GPU GGML speech tokens followed by the CPU S3 decoder. */
 class KittenEngine : AutoCloseable {
     private var decoder: Module? = null
     private var voices = JSONObject()
     @Volatile private var canceled = false
 
-    fun load(dir: File, threads: Int) {
+    fun load(dir: File, threads: Int, backend: String) {
         close()
         try {
+            check(!canceled) { "Canceled" }
             voices = JSONObject(File(dir, "voices.json").readText())
+            KittenNative.load(File(dir, "model-tq2_1.gguf").absolutePath.toByteArray(Charsets.UTF_8),
+                File(dir, "config.json").readBytes(), threads, backend.toByteArray(Charsets.UTF_8))
+            check(!canceled) { "Canceled" }
             PyTorchAndroid.setNumThreads(threads)
             decoder = Module.load(File(dir, "decoder.pt").absolutePath)
-            KittenNative.load(File(dir, "model-tq2_1.gguf").absolutePath.toByteArray(Charsets.UTF_8),
-                File(dir, "config.json").readBytes(), threads)
+            check(!canceled) { "Canceled" }
         } catch (t: Throwable) {
             close()
             throw t
@@ -33,6 +36,9 @@ class KittenEngine : AutoCloseable {
     fun resetCancel() { canceled = false; KittenNative.resetCancel() }
     fun cancel() { canceled = true; KittenNative.cancel() }
 
+    var tokenMs = 0L; private set
+    var decoderMs = 0L; private set
+
     fun generate(text: String, voiceName: String, seed: Int): ByteArray {
         check(!canceled) { "Canceled" }
         val voice = voices.getJSONObject(voiceName.removePrefix(VOICE_PREFIX))
@@ -40,9 +46,11 @@ class KittenEngine : AutoCloseable {
         // English grammar normalizer is not part of the Android runtime.
         val spoken = text.trim().replace(Regex("\\s+"), " ")
         require(spoken.isNotBlank()) { "Nothing to speak" }
-        val expression = EXPRESSION.containsMatchIn(spoken)
+        val expression = SpeechMarkup.kittenExpression.containsMatchIn(spoken)
+        val started = android.os.SystemClock.elapsedRealtime()
         val tokens = KittenNative.generate(spoken.toByteArray(Charsets.UTF_8),
             voice.toString().toByteArray(Charsets.UTF_8), seed, expression)
+        tokenMs = android.os.SystemClock.elapsedRealtime() - started
         check(!canceled) { "Canceled" }
         val padded = LongArray(tokens.size + 3) { if (it < tokens.size) tokens[it].toLong() else 4299L }
         val refTokens = voice.getJSONArray("prompt_token").getJSONArray(0).longs()
@@ -50,12 +58,14 @@ class KittenEngine : AutoCloseable {
         val features = FloatArray(rows.length() * 80) { i -> rows.getJSONArray(i / 80).getDouble(i % 80).toFloat() }
         val embedding = voice.getJSONArray("embedding").getJSONArray(0).floats()
         val module = checkNotNull(decoder) { "Kitten decoder is not loaded" }
+        val decoding = android.os.SystemClock.elapsedRealtime()
         val audio = module.forward(
             IValue.from(Tensor.fromBlob(padded, longArrayOf(1, padded.size.toLong()))),
             IValue.from(Tensor.fromBlob(refTokens, longArrayOf(1, refTokens.size.toLong()))),
             IValue.from(Tensor.fromBlob(features, longArrayOf(1, rows.length().toLong(), 80))),
             IValue.from(Tensor.fromBlob(embedding, longArrayOf(1, embedding.size.toLong())))
         ).toTensor().dataAsFloatArray
+        decoderMs = android.os.SystemClock.elapsedRealtime() - decoding
         check(!canceled) { "Canceled" }
         check(audio.isNotEmpty() && audio.all { it.isFinite() }) { "Kitten decoder returned invalid audio" }
         return ByteBuffer.allocate(audio.size * 2).order(ByteOrder.LITTLE_ENDIAN).apply {
@@ -72,10 +82,6 @@ class KittenEngine : AutoCloseable {
     companion object {
         const val VOICE_PREFIX = "Kitten: "
         const val SAMPLE_RATE = 24000
-        private val EXPRESSION = Regex(
-            "\\[(angry|contemplative|excited|joyful|mundane|nervous|sad|stern|surprised|tender)]|" +
-                "<(gasp|giggle|growl|gulp|laugh|pause|scoff|sigh|sob|um)>|\\(\\(\\([^()\\n]{1,80}\\)\\)\\)",
-            RegexOption.IGNORE_CASE)
         private fun JSONArray.longs() = LongArray(length()) { getLong(it) }
         private fun JSONArray.floats() = FloatArray(length()) { getDouble(it).toFloat() }
     }
@@ -83,7 +89,7 @@ class KittenEngine : AutoCloseable {
 
 internal object KittenNative {
     init { System.loadLibrary("ttsrunner_jni") }
-    external fun load(path: ByteArray, config: ByteArray, threads: Int)
+    external fun load(path: ByteArray, config: ByteArray, threads: Int, backend: ByteArray)
     external fun generate(text: ByteArray, voice: ByteArray, seed: Int, expression: Boolean): IntArray
     external fun resetCancel()
     external fun cancel()

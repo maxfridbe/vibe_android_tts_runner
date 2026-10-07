@@ -48,5 +48,16 @@ preprocessor or trimming eats them.
 
 ## In the app
 
-Talk's tag row carries these ten. A tap inserts one; a long press inserts
-three, which is the difference between a breath and an actual laugh.
+Jobs, Chats, and the shared-text editor show **Delivery · Supertonic** for a
+Supertonic speaker. **Vocal event** inserts any of these ten tags at the cursor;
+repeat the insertion for repeated events. The speed slider is shown only for
+Supertonic, which is the engine that implements it.
+
+Kitten speakers instead show **Delivery · Kitten TTS 2**, with their own event
+list (`<gasp>`, `<giggle>`, `<growl>`, `<gulp>`, `<laugh>`, `<pause>`, `<scoff>`,
+`<sigh>`, `<sob>`, `<um>`), ten leading emotion tags, and an **Emphasize** action
+that wraps selected words in triple parentheses. With no selection, it asks
+for a short phrase. Emotion replaces the previous leading emotion tag, and
+**No emotion tag** removes it. Controls insert editable markup directly into
+the text; each engine gets only its own menu entries. See
+[Kitten's expression documentation](https://huggingface.co/KittenML/kitten-tts-2#expression-controls).

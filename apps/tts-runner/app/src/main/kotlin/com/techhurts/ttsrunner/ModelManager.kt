@@ -74,10 +74,10 @@ object ModelManager {
 
     val CATALOG = listOf(
         CatalogModel(
-            id = "kitten-tts-2", label = "Kitten TTS 2 (1.35 GB, CPU, preset voices)",
+            id = "kitten-tts-2", label = "Kitten TTS 2 (1.35 GB, preset voices)",
             talkerUrl = "", talkerFile = "kitten-tts-2/model-tq2_1.gguf",
             mmprojUrl = "", mmprojFile = "kitten-tts-2/decoder.pt",
-            totalBytes = KITTEN_SIZES.values.sum(), engine = "kitten",
+            totalBytes = KITTEN_SIZES.values.sum(), engine = "kitten", gpuCapable = true,
             extraFiles = listOf(
                 "$KITTEN_BASE/config.json" to "config.json",
                 "$KITTEN_BASE/cpp/model-tq2_1.gguf" to "model-tq2_1.gguf",
